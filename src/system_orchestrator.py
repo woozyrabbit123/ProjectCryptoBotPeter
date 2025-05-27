@@ -8,42 +8,54 @@ from settings import SO_SETTINGS
 import psutil
 from src.data_logger import log_event
 from datetime import datetime
+from typing import List, Dict, Optional, Any, Tuple, Deque, TYPE_CHECKING
+import random
+import pickle
+import os
+
 from src.meta_parameter_monitor import MetaParameterMonitor
 import settings  # <-- Add this import
 import json
-from src.lee import LEE
+# from src.lee import LEE # Moved to TYPE_CHECKING
 from src.market_persona import MarketPersona
 from src.logic_dna import LogicDNA_v1
 from src.mle_engine import MLE_v0_1
 from src.ces_module import CES_v1_0
 
+
+if TYPE_CHECKING:
+    from src.lee import LEE
+    from src.experimental_pool import PoolDNAEntry # Assuming this is the type of graduated_entry
+
 logger = logging.getLogger(__name__)
 
-MAX_CANDIDATE_SLOTS = 2
-CANDIDATE_VIRTUAL_CAPITAL = 10.0  # Notional, larger than pool
-CANDIDATE_MIN_SHARPE = 0.3
-CANDIDATE_MIN_PNL = 5.0
-CANDIDATE_MIN_TICKS = 100
-CANDIDATE_MIN_ACTIVATIONS = 3
-CANDIDATE_EPSILON = 1e-6
-CANDIDATE_MAX_LIFE = 2000  # ticks
-CANDIDATE_SHARPE_DROP_TRIGGER = 0.3  # 30% drop triggers self-calibration
-AB_TEST_TICKS = 200  # Configurable A/B test period
-FITNESS_WEIGHTS = {'sharpe': 0.4, 'regime_consistency': 0.3, 'diversification': 0.3}
-AB_SHARPE_THRESHOLD = 0.10  # 10% Sharpe improvement
-AB_PNL_THRESHOLD = 0.05     # 5% PnL improvement
-INFLUENCE_MULTIPLIER_MAX = 1.5
-INFLUENCE_MULTIPLIER_MIN = 0.5
-INFLUENCE_MULTIPLIER_STEP_UP = 0.1
-INFLUENCE_MULTIPLIER_STEP_DOWN = 0.1
-INFLUENCE_SCORE_HIGH_PCT = 0.75  # Top 25% get boost
-INFLUENCE_SCORE_LOW_PCT = 0.25   # Bottom 25% get reduced
-COOLDOWN_TICKS_AFTER_TWEAK = 750
+# Constants with type hints
+MAX_CANDIDATE_SLOTS: int = SO_SETTINGS.get('MAX_CANDIDATE_SLOTS', 2) # Example if from settings
+CANDIDATE_VIRTUAL_CAPITAL: float = SO_SETTINGS.get('CANDIDATE_VIRTUAL_CAPITAL', 10.0)
+CANDIDATE_MIN_SHARPE: float = SO_SETTINGS.get('CANDIDATE_MIN_SHARPE', 0.3)
+CANDIDATE_MIN_PNL: float = SO_SETTINGS.get('CANDIDATE_MIN_PNL', 5.0)
+CANDIDATE_MIN_TICKS: int = SO_SETTINGS.get('CANDIDATE_MIN_TICKS', 100)
+CANDIDATE_MIN_ACTIVATIONS: int = SO_SETTINGS.get('CANDIDATE_MIN_ACTIVATIONS', 3)
+CANDIDATE_EPSILON: float = SO_SETTINGS.get('CANDIDATE_EPSILON', 1e-6)
+CANDIDATE_MAX_LIFE: int = SO_SETTINGS.get('CANDIDATE_MAX_LIFE', 2000)
+CANDIDATE_SHARPE_DROP_TRIGGER: float = SO_SETTINGS.get('CANDIDATE_SHARPE_DROP_TRIGGER', 0.3)
+AB_TEST_TICKS: int = SO_SETTINGS.get('AB_TEST_TICKS', 200)
+FITNESS_WEIGHTS: Dict[str, float] = SO_SETTINGS.get('FITNESS_WEIGHTS', {'sharpe': 0.4, 'regime_consistency': 0.3, 'diversification': 0.3})
+AB_SHARPE_THRESHOLD: float = SO_SETTINGS.get('AB_SHARPE_THRESHOLD', 0.10)
+AB_PNL_THRESHOLD: float = SO_SETTINGS.get('AB_PNL_THRESHOLD', 0.05)
+INFLUENCE_MULTIPLIER_MAX: float = SO_SETTINGS.get('INFLUENCE_MULTIPLIER_MAX', 1.5)
+INFLUENCE_MULTIPLIER_MIN: float = SO_SETTINGS.get('INFLUENCE_MULTIPLIER_MIN', 0.5)
+INFLUENCE_MULTIPLIER_STEP_UP: float = SO_SETTINGS.get('INFLUENCE_MULTIPLIER_STEP_UP', 0.1)
+INfluence_MULTIPLIER_STEP_DOWN: float = SO_SETTINGS.get('INFLUENCE_MULTIPLIER_STEP_DOWN', 0.1) # Typo in original? Assuming INFLUENCE
+INFLUENCE_SCORE_HIGH_PCT: float = SO_SETTINGS.get('INFLUENCE_SCORE_HIGH_PCT', 0.75)
+INFLUENCE_SCORE_LOW_PCT: float = SO_SETTINGS.get('INFLUENCE_SCORE_LOW_PCT', 0.25)
+COOLDOWN_TICKS_AFTER_TWEAK: int = SO_SETTINGS.get('COOLDOWN_TICKS_AFTER_TWEAK', 750)
 
-def check_settings_dict(settings_dict, required_keys, dict_name):
-    missing = [k for k in required_keys if k not in settings_dict]
+
+def check_settings_dict(settings_dict: Dict[str, Any], required_keys: List[str], dict_name: str) -> None:
+    missing: List[str] = [k for k in required_keys if k not in settings_dict]
     if missing:
-        log_event('CRITICAL_ERROR', {'missing_keys': missing, 'settings_dict': dict_name})
+        log_event('CRITICAL_ERROR', {'missing_keys': missing, 'settings_dict': dict_name}) # type: ignore
         raise RuntimeError(f"CRITICAL: Missing keys in {dict_name}: {missing}")
 
 class ConflictResolver:
@@ -51,10 +63,10 @@ class ConflictResolver:
     MVP stub for conflict detection and resolution between system influences.
     For now, always returns False for conflicts and passes through parameters.
     """
-    def __init__(self, config):
-        self.config = config
+    def __init__(self, config: Dict[str, Any]):
+        self.config: Dict[str, Any] = config
 
-    def detect_conflicts(self, current_params: dict, influences: dict) -> bool:
+    def detect_conflicts(self, current_params: Dict[str, Any], influences: Dict[str, Any]) -> bool:
         """
         Detects if there are conflicting influences on key parameters.
         For MVP, always returns False.
@@ -62,7 +74,7 @@ class ConflictResolver:
         logger.debug("ConflictResolver.detect_conflicts called (MVP: always returns False)")
         return False
 
-    def resolve(self, current_params: dict, influences: dict) -> dict:
+    def resolve(self, current_params: Dict[str, Any], influences: Dict[str, Any]) -> Dict[str, Any]:
         """
         Resolves conflicts by applying a simple rule (prioritize safety, etc.).
         For MVP, just returns current_params unchanged.
@@ -75,49 +87,57 @@ class RegimeClassifier:
     Classifies market regime using rolling window of price data.
     Regimes: HIGH_VOL, LOW_VOL, UPTREND_STRONG, DOWNTREND_STRONG, SIDEWAYS_CHOPPY
     """
-    def __init__(self, window=50):
-        self.window = window
-        self.price_buffer = deque(maxlen=window)
-        self.last_regime = None
+    def __init__(self, window: int = 50):
+        self.window: int = window
+        self.price_buffer: Deque[float] = deque(maxlen=window)
+        self.last_regime: Optional[Dict[str, str]] = None
 
-    def update(self, price):
+    def update(self, price: float) -> Optional[Dict[str, str]]:
         self.price_buffer.append(price)
         return self.classify()
 
-    def classify(self):
-        if len(self.price_buffer) < 10:
+    def classify(self) -> Optional[Dict[str, str]]:
+        if len(self.price_buffer) < 10: # Need enough data points
             return None
-        prices = np.array(self.price_buffer)
-        returns = np.diff(prices)
-        vol = np.std(returns)
-        sma = np.convolve(prices, np.ones(20)/20, mode='valid')
-        trend = (sma[-1] - sma[0]) / 20 if len(sma) >= 2 else 0.0
-        # Regime logic
-        if vol > 1.0:
-            vol_regime = 'HIGH_VOL'
-        elif vol < 0.3:
-            vol_regime = 'LOW_VOL'
-        else:
-            vol_regime = 'MEDIUM_VOL'
-        if trend > 0.05:
-            trend_regime = 'UPTREND_STRONG'
-        elif trend < -0.05:
-            trend_regime = 'DOWNTREND_STRONG'
-        else:
-            trend_regime = 'SIDEWAYS_CHOPPY'
-        regime = {'VOLATILITY': vol_regime, 'TREND': trend_regime}
-        if regime != self.last_regime:
-            log_event(
-                'REGIME_CHANGE_DETECTED',
-                {
-                    'old_regime': self.last_regime,
-                    'new_regime': regime,
-                    'timestamp': datetime.now().isoformat(),
-                }
-            )
-            logger.info(f"SO RegimeClassifier: Regime changed to {regime}")
-            self.last_regime = regime
-        return regime
+        
+        prices: np.ndarray = np.array(self.price_buffer, dtype=float)
+        returns: np.ndarray = np.diff(prices)
+        if len(returns) == 0: return None # Not enough data for returns
+
+        vol: float = np.std(returns)
+        
+        sma_window: int = min(20, len(prices)) # Ensure SMA window is not larger than available prices
+        if sma_window < 2: return None # Not enough data for SMA trend calculation
+
+        sma: np.ndarray = np.convolve(prices, np.ones(sma_window)/sma_window, mode='valid')
+        if len(sma) < 2: return None # Not enough data for trend calculation from SMA
+
+        trend: float = (sma[-1] - sma[0]) / sma_window if sma_window > 0 else 0.0
+        
+        vol_regime: str
+        if vol > 1.0: vol_regime = 'HIGH_VOL'
+        elif vol < 0.3: vol_regime = 'LOW_VOL'
+        else: vol_regime = 'MEDIUM_VOL'
+        
+        trend_regime: str
+        if trend > 0.05: trend_regime = 'UPTREND_STRONG'
+        elif trend < -0.05: trend_regime = 'DOWNTREND_STRONG'
+        else: trend_regime = 'SIDEWAYS_CHOPPY'
+            
+        current_regime: Dict[str, str] = {'VOLATILITY': vol_regime, 'TREND': trend_regime}
+        
+        if current_regime != self.last_regime:
+            log_event( # type: ignore
+                'REGIME_CHANGE_DETECTED', # type: ignore
+                { # type: ignore
+                    'old_regime': self.last_regime, # type: ignore
+                    'new_regime': current_regime, # type: ignore
+                    'timestamp': datetime.now().isoformat(), # type: ignore
+                } # type: ignore
+            ) # type: ignore
+            logger.info(f"SO RegimeClassifier: Regime changed to {current_regime}")
+            self.last_regime = current_regime
+        return current_regime
 
 class CandidateStrategySlot:
     """
@@ -128,130 +148,159 @@ class CandidateStrategySlot:
         dna (LogicDNA): The DNA instance (with unique id).
         ... (other attributes as before)
     """
-    def __init__(self, pool_entry):
-        self.dna = pool_entry.dna
-        self.dedicated_virtual_capital_candidate = SO_SETTINGS['CANDIDATE_VIRTUAL_CAPITAL']
-        self.pnl_candidate = 0.0
-        self.sharpe_candidate = 0.0
-        self.ticks_in_candidate = 0
-        self.activation_count_candidate = 0
-        self.pnl_history = []
-        self.logger = logging.getLogger(__name__)
-        self.ready_for_demotion = False
-        self.recent_high_sharpe = 0.0
-        self.self_calibration_needed = False
-        self.influence_multiplier = 1.0
-        self.last_tweak_implemented_at = -SO_SETTINGS['COOLDOWN_TICKS_AFTER_TWEAK']  # So it's not in cooldown at start
+    def __init__(self, pool_entry: 'PoolDNAEntry'): # Use forward reference for PoolDNAEntry
+        self.dna: LogicDNA = pool_entry.dna # type: ignore # Assuming PoolDNAEntry has a .dna attribute of type LogicDNA
+        self.dedicated_virtual_capital_candidate: float = CANDIDATE_VIRTUAL_CAPITAL
+        self.pnl_candidate: float = 0.0
+        self.sharpe_candidate: float = 0.0
+        self.ticks_in_candidate: int = 0
+        self.activation_count_candidate: int = 0
+        self.pnl_history: List[float] = []
+        self.logger: logging.Logger = logging.getLogger(__name__)
+        self.ready_for_demotion: bool = False
+        self.recent_high_sharpe: float = 0.0
+        self.self_calibration_needed: bool = False
+        self.influence_multiplier: float = 1.0
+        self.last_tweak_implemented_at: int = -COOLDOWN_TICKS_AFTER_TWEAK
 
-    def evaluate_tick(self, market_tick, global_tick=None):
+    def evaluate_tick(self, market_tick: Dict[str, Any], global_tick: Optional[int] = None) -> None:
         """
         Evaluate this candidate's DNA for the current market tick, updating PnL, Sharpe, and calibration triggers.
         """
         self.ticks_in_candidate += 1
-        indicator_value = market_tick.get(self.dna.trigger_indicator, None)
+        indicator_value: Optional[float] = market_tick.get(self.dna.trigger_indicator) # type: ignore
+        
         if indicator_value is None:
-            return
-        op = self.dna.trigger_operator
-        threshold = self.dna.trigger_threshold
-        triggered = (op == '<' and indicator_value < threshold) or (op == '>' and indicator_value > threshold)
+            return # Cannot evaluate if indicator is missing
+
+        op: str = self.dna.trigger_operator # type: ignore
+        threshold: float = self.dna.trigger_threshold # type: ignore
+        
+        triggered: bool = (op == '<' and indicator_value < threshold) or \
+                          (op == '>' and indicator_value > threshold)
+        
         if triggered:
             self.activation_count_candidate += 1
-            price_now = market_tick.get('price', 0.0)
-            price_prev = market_tick.get('price_prev', price_now)
-            if self.dna.action_target.startswith('buy'):
-                pnl = self.dedicated_virtual_capital_candidate * (1.0 if price_now > price_prev else -1.0)
-            elif self.dna.action_target.startswith('sell'):
-                pnl = self.dedicated_virtual_capital_candidate * (1.0 if price_now < price_prev else -1.0)
-            else:
-                pnl = 0.0
-            self.pnl_candidate += pnl
-            self.pnl_history.append(pnl)
-            self.logger.info(f"CandidateSlot: DNA {self.dna.id} triggered | PnL: {pnl} | TotalPnL: {self.pnl_candidate}")
-        # Update Sharpe
+            price_now: float = market_tick.get('price', 0.0)
+            price_prev: float = market_tick.get('price_prev', price_now) # Use current if prev is missing
+            
+            pnl_this_tick: float = 0.0
+            if self.dna.action_target.startswith('buy'): # type: ignore
+                pnl_this_tick = self.dedicated_virtual_capital_candidate * (1.0 if price_now > price_prev else -1.0)
+            elif self.dna.action_target.startswith('sell'): # type: ignore
+                pnl_this_tick = self.dedicated_virtual_capital_candidate * (1.0 if price_now < price_prev else -1.0)
+            
+            self.pnl_candidate += pnl_this_tick
+            self.pnl_history.append(pnl_this_tick)
+            self.logger.info(f"CandidateSlot: DNA {self.dna.id} triggered | PnL: {pnl_this_tick} | TotalPnL: {self.pnl_candidate}")
+
         if self.pnl_history:
-            mean_pnl = sum(self.pnl_history) / len(self.pnl_history)
-            variance = sum((x - mean_pnl) ** 2 for x in self.pnl_history) / len(self.pnl_history)
-            stddev = math.sqrt(variance) + SO_SETTINGS['CANDIDATE_EPSILON']
-            self.sharpe_candidate = mean_pnl / stddev
-            # Track recent high Sharpe
+            mean_pnl: float = np.mean(self.pnl_history) # type: ignore
+            std_dev_pnl: float = np.std(self.pnl_history) + CANDIDATE_EPSILON # type: ignore
+            self.sharpe_candidate = mean_pnl / std_dev_pnl if std_dev_pnl > 0 else 0.0 # Avoid division by zero
+
             if self.sharpe_candidate > self.recent_high_sharpe:
                 self.recent_high_sharpe = self.sharpe_candidate
+            
             # Self-calibration trigger
-            if (self.recent_high_sharpe > 0 and self.sharpe_candidate < (1 - SO_SETTINGS['CANDIDATE_SHARPE_DROP_TRIGGER']) * self.recent_high_sharpe and
-                (global_tick is None or global_tick - self.last_tweak_implemented_at > SO_SETTINGS['COOLDOWN_TICKS_AFTER_TWEAK'])):
+            sharpe_drop_pct: float = (self.recent_high_sharpe - self.sharpe_candidate) / self.recent_high_sharpe if self.recent_high_sharpe > 0 else 0
+            cooldown_passed: bool = global_tick is None or (global_tick - self.last_tweak_implemented_at > COOLDOWN_TICKS_AFTER_TWEAK)
+
+            if sharpe_drop_pct > CANDIDATE_SHARPE_DROP_TRIGGER and cooldown_passed:
                 self.self_calibration_needed = True
                 self.logger.info(f"CandidateSlot: DNA {self.dna.id} triggered self-calibration | Sharpe dropped from {self.recent_high_sharpe:.2f} to {self.sharpe_candidate:.2f}")
+        
         # Demotion check
-        if self.ticks_in_candidate > SO_SETTINGS['CANDIDATE_MAX_LIFE'] and (self.sharpe_candidate < SO_SETTINGS['CANDIDATE_MIN_SHARPE'] or self.pnl_candidate < SO_SETTINGS['CANDIDATE_MIN_PNL']):
+        if self.ticks_in_candidate > CANDIDATE_MAX_LIFE and \
+           (self.sharpe_candidate < CANDIDATE_MIN_SHARPE or self.pnl_candidate < CANDIDATE_MIN_PNL):
             self.ready_for_demotion = True
             self.logger.info(f"CandidateSlot: DNA {self.dna.id} flagged for demotion | Sharpe={self.sharpe_candidate:.2f} | PnL={self.pnl_candidate:.2f}")
 
-    def is_ready_for_graduation(self):
+    def is_ready_for_graduation(self) -> bool:
         """
         Check if this candidate is ready for graduation based on performance and activity.
         Returns:
             bool: True if ready for graduation.
         """
-        return (self.ticks_in_candidate >= SO_SETTINGS['CANDIDATE_MIN_TICKS'] and
-                self.activation_count_candidate >= SO_SETTINGS['CANDIDATE_MIN_ACTIVATIONS'] and
-                self.pnl_candidate >= SO_SETTINGS['CANDIDATE_MIN_PNL'] and
-                self.sharpe_candidate >= SO_SETTINGS['CANDIDATE_MIN_SHARPE'])
+        return (self.ticks_in_candidate >= CANDIDATE_MIN_TICKS and
+                self.activation_count_candidate >= CANDIDATE_MIN_ACTIVATIONS and
+                self.pnl_candidate >= CANDIDATE_MIN_PNL and
+                self.sharpe_candidate >= CANDIDATE_MIN_SHARPE)
 
-    def run_self_calibration(self, recent_market_data, so, regime=None):
+    def run_self_calibration(self, recent_market_data: List[Dict[str, Any]], so_instance: 'SystemOrchestrator', regime: Optional[Dict[str, str]] = None) -> None:
         """
         Parameter Explorer & Tweak Assessor: Generate 2-3 tweaks, micro-sim each, compare to original, propose best to SO.
         Args:
             recent_market_data: List of dicts (market ticks) for micro-sim.
-            so: SystemOrchestrator instance for logging proposal.
+            so_instance: SystemOrchestrator instance for logging proposal.
             regime: Regime information for micro-sim.
         """
-        self.logger.info(f"CandidateSlot: Running self-calibration for DNA {self.dna.id}")
-        tweaks = [mutate_dna(self.dna, mutation_strength=0.1) for _ in range(3)]
-        results = []
-        sensitivity_profile = []
-        # Sim original
-        orig_result = run_nanostrat_test(self.dna, recent_market_data)
-        results.append({'dna': self.dna, 'result': orig_result, 'is_original': True})
-        # Sim tweaks (record param, value, result)
-        for t in tweaks:
-            t_result = run_nanostrat_test(t, recent_market_data)
-            results.append({'dna': t, 'result': t_result, 'is_original': False})
-            # Sensitivity: which param changed?
-            for param in ['trigger_threshold', 'action_value']:
-                if getattr(t, param) != getattr(self.dna, param):
-                    sensitivity_profile.append({'param': param, 'value': getattr(t, param), 'pnl': t_result['virtual_pnl'], 'sharpe': t_result['virtual_pnl'] / (np.std([t_result['virtual_pnl']]) + 1e-6)})
-        # Find best
-        best = max(results, key=lambda x: x['result']['virtual_pnl'])
-        if not best['is_original'] and best['result']['virtual_pnl'] > orig_result['virtual_pnl']:
-            self.logger.info(f"CandidateSlot: Best tweak found for DNA {self.dna.id}: {best['dna']} | PnL uplift: {best['result']['virtual_pnl'] - orig_result['virtual_pnl']:.2f}")
-            micro_sim_regimes = regime if regime else 'unknown'
-            self.propose_tweak_to_so(best['dna'], self.dna, best['result'], orig_result, so, micro_sim_regimes, sensitivity_profile)
+        self.logger.info(f"CandidateSlot: Running self-calibration for DNA {self.dna.id}") # type: ignore
+        tweaks: List[LogicDNA] = [mutate_dna(self.dna, mutation_strength=0.1) for _ in range(3)] # type: ignore
+        
+        sim_results: List[Dict[str, Any]] = []
+        sensitivity_profile_data: List[Dict[str, Any]] = []
+        
+        original_sim_result: Dict[str, Any] = run_nanostrat_test(self.dna, recent_market_data) # type: ignore
+        sim_results.append({'dna': self.dna, 'result': original_sim_result, 'is_original': True})
+        
+        for tweaked_dna in tweaks:
+            tweaked_sim_result: Dict[str, Any] = run_nanostrat_test(tweaked_dna, recent_market_data) # type: ignore
+            sim_results.append({'dna': tweaked_dna, 'result': tweaked_sim_result, 'is_original': False})
+            for param_name in ['trigger_threshold', 'action_value']:
+                if getattr(tweaked_dna, param_name) != getattr(self.dna, param_name): # type: ignore
+                    pnl: float = tweaked_sim_result.get('virtual_pnl', 0.0)
+                    sharpe: float = pnl / (np.std([pnl]) + CANDIDATE_EPSILON) if pnl != 0 else 0.0 # Simplified Sharpe for single value
+                    sensitivity_profile_data.append({
+                        'param': param_name, 
+                        'value': getattr(tweaked_dna, param_name), 
+                        'pnl': pnl, 
+                        'sharpe': sharpe
+                    })
+
+        best_sim: Dict[str, Any] = max(sim_results, key=lambda x: x['result'].get('virtual_pnl', float('-inf')))
+        
+        if not best_sim['is_original'] and best_sim['result'].get('virtual_pnl', 0.0) > original_sim_result.get('virtual_pnl', 0.0):
+            best_dna_tweak: LogicDNA = best_sim['dna']
+            pnl_uplift: float = best_sim['result'].get('virtual_pnl', 0.0) - original_sim_result.get('virtual_pnl', 0.0)
+            self.logger.info(f"CandidateSlot: Best tweak found for DNA {self.dna.id}: {best_dna_tweak} | PnL uplift: {pnl_uplift:.2f}") # type: ignore
+            
+            regime_for_sim: Any = regime if regime else 'unknown'
+            self.propose_tweak_to_so(best_dna_tweak, self.dna, best_sim['result'], original_sim_result, so_instance, regime_for_sim, sensitivity_profile_data) # type: ignore
         else:
-            self.logger.info(f"CandidateSlot: No tweak outperformed original for DNA {self.dna.id}")
+            self.logger.info(f"CandidateSlot: No tweak outperformed original for DNA {self.dna.id}") # type: ignore
+            
         self.self_calibration_needed = False
 
-    def propose_tweak_to_so(self, tweak_dna, orig_dna, tweak_result, orig_result, so, micro_sim_regimes=None, sensitivity_profile=None):
-        so.log_tweak_proposal(
-            candidate_id=orig_dna.id,
+    def propose_tweak_to_so(self, 
+                            tweak_dna: LogicDNA, 
+                            orig_dna: LogicDNA, 
+                            tweak_result: Dict[str, Any], 
+                            orig_result: Dict[str, Any], 
+                            so_instance: 'SystemOrchestrator', 
+                            micro_sim_regimes: Optional[Any] = None, 
+                            sensitivity_profile: Optional[List[Dict[str, Any]]] = None) -> None:
+        so_instance.log_tweak_proposal(
+            candidate_id=orig_dna.id, # type: ignore
             orig_params={
-                'trigger_indicator': orig_dna.trigger_indicator,
-                'trigger_operator': orig_dna.trigger_operator,
-                'trigger_threshold': orig_dna.trigger_threshold,
-                'context_regime_id': orig_dna.context_regime_id,
-                'action_target': orig_dna.action_target,
-                'action_type': orig_dna.action_type,
-                'action_value': orig_dna.action_value,
-                'resource_cost': getattr(orig_dna, 'resource_cost', 1)
+                'trigger_indicator': orig_dna.trigger_indicator, # type: ignore
+                'trigger_operator': orig_dna.trigger_operator, # type: ignore
+                'trigger_threshold': orig_dna.trigger_threshold, # type: ignore
+                'context_regime_id': orig_dna.context_regime_id, # type: ignore
+                'action_target': orig_dna.action_target, # type: ignore
+                'action_type': orig_dna.action_type, # type: ignore
+                'action_value': orig_dna.action_value, # type: ignore
+                'resource_cost': getattr(orig_dna, 'resource_cost', 1) # type: ignore
             },
             tweak_params={
-                'trigger_indicator': tweak_dna.trigger_indicator,
-                'trigger_operator': tweak_dna.trigger_operator,
-                'trigger_threshold': tweak_dna.trigger_threshold,
-                'context_regime_id': tweak_dna.context_regime_id,
-                'action_target': tweak_dna.action_target,
-                'action_type': tweak_dna.action_type,
-                'action_value': tweak_dna.action_value,
-                'resource_cost': getattr(tweak_dna, 'resource_cost', 1)
+                'trigger_indicator': tweak_dna.trigger_indicator, # type: ignore
+                'trigger_operator': tweak_dna.trigger_operator, # type: ignore
+                'trigger_threshold': tweak_dna.trigger_threshold, # type: ignore
+                'context_regime_id': tweak_dna.context_regime_id, # type: ignore
+                'action_target': tweak_dna.action_target, # type: ignore
+                'action_type': tweak_dna.action_type, # type: ignore
+                'action_value': tweak_dna.action_value, # type: ignore
+                'resource_cost': getattr(tweak_dna, 'resource_cost', 1) # type: ignore
             },
             orig_result=orig_result,
             tweak_result=tweak_result,
@@ -260,203 +309,261 @@ class CandidateStrategySlot:
         )
 
 class ABTestManager:
-    def __init__(self):
-        self.active_tests = {}  # key: candidate_id, value: ABTest
+    def __init__(self) -> None:
+        self.active_tests: Dict[str, 'ABTestManager.ABTest'] = {} 
 
     class ABTest:
-        def __init__(self, candidate_id, control_dna, variant_dna, start_tick, regime):
-            self.candidate_id = candidate_id
-            self.control_dna = control_dna
-            self.variant_dna = variant_dna
-            self.start_tick = start_tick
-            self.regime = regime
-            self.ticks = 0
-            self.control_metrics = {'pnl': 0.0, 'activations': 0, 'pnl_history': []}
-            self.variant_metrics = {'pnl': 0.0, 'activations': 0, 'pnl_history': []}
-            self.finished = False
+        def __init__(self, candidate_id: str, control_dna: LogicDNA, variant_dna: LogicDNA, start_tick: int, regime: Optional[Dict[str, str]]):
+            self.candidate_id: str = candidate_id
+            self.control_dna: LogicDNA = control_dna
+            self.variant_dna: LogicDNA = variant_dna
+            self.start_tick: int = start_tick
+            self.regime: Optional[Dict[str, str]] = regime
+            self.ticks: int = 0
+            self.control_metrics: Dict[str, Any] = {'pnl': 0.0, 'activations': 0, 'pnl_history': []}
+            self.variant_metrics: Dict[str, Any] = {'pnl': 0.0, 'activations': 0, 'pnl_history': []}
+            self.finished: bool = False
 
-        def step(self, market_tick):
-            # Evaluate both DNAs on this tick
-            for label, dna, metrics in [('control', self.control_dna, self.control_metrics), ('variant', self.variant_dna, self.variant_metrics)]:
-                indicator_value = market_tick.get(dna.trigger_indicator, None)
-                if indicator_value is None:
-                    continue
-                op = dna.trigger_operator
-                threshold = dna.trigger_threshold
-                triggered = (op == '<' and indicator_value < threshold) or (op == '>' and indicator_value > threshold)
-                if triggered:
-                    metrics['activations'] += 1
-                    price_now = market_tick.get('price', 0.0)
-                    price_prev = market_tick.get('price_prev', price_now)
-                    if dna.action_target.startswith('buy'):
-                        pnl = 1.0 if price_now > price_prev else -1.0
-                    elif dna.action_target.startswith('sell'):
-                        pnl = 1.0 if price_now < price_prev else -1.0
-                    else:
-                        pnl = 0.0
-                    metrics['pnl'] += pnl
-                    metrics['pnl_history'].append(pnl)
+        def step(self, market_tick: Dict[str, Any]) -> None:
+            for _label, dna_instance, metrics_dict in [('control', self.control_dna, self.control_metrics), 
+                                                       ('variant', self.variant_dna, self.variant_metrics)]:
+                indicator_val: Optional[float] = market_tick.get(dna_instance.trigger_indicator) # type: ignore
+                if indicator_val is None: continue
+
+                operator: str = dna_instance.trigger_operator # type: ignore
+                thresh: float = dna_instance.trigger_threshold # type: ignore
+                is_triggered: bool = (operator == '<' and indicator_val < thresh) or \
+                                   (operator == '>' and indicator_val > thresh)
+                
+                if is_triggered:
+                    metrics_dict['activations'] += 1
+                    current_price: float = market_tick.get('price', 0.0)
+                    previous_price: float = market_tick.get('price_prev', current_price)
+                    
+                    tick_pnl: float = 0.0
+                    if dna_instance.action_target.startswith('buy'): # type: ignore
+                        tick_pnl = 1.0 if current_price > previous_price else -1.0
+                    elif dna_instance.action_target.startswith('sell'): # type: ignore
+                        tick_pnl = 1.0 if current_price < previous_price else -1.0
+                    
+                    metrics_dict['pnl'] += tick_pnl
+                    metrics_dict['pnl_history'].append(tick_pnl)
+            
             self.ticks += 1
             if self.ticks >= AB_TEST_TICKS:
                 self.finished = True
 
-        def summary(self):
-            def sharpe(metrics):
-                if not metrics['pnl_history']:
-                    return 0.0
-                mean = np.mean(metrics['pnl_history'])
-                std = np.std(metrics['pnl_history']) + 1e-6
-                return mean / std
+        def summary(self) -> Dict[str, Any]:
+            def calculate_sharpe(metrics_data: Dict[str, Any]) -> float:
+                pnl_hist: List[float] = metrics_data.get('pnl_history', [])
+                if not pnl_hist: return 0.0
+                mean_ret: float = np.mean(pnl_hist) # type: ignore
+                std_ret: float = np.std(pnl_hist) + CANDIDATE_EPSILON # type: ignore
+                return mean_ret / std_ret if std_ret > 0 else 0.0
+
             return {
                 'control': {
                     'pnl': self.control_metrics['pnl'],
                     'activations': self.control_metrics['activations'],
-                    'sharpe': sharpe(self.control_metrics)
+                    'sharpe': calculate_sharpe(self.control_metrics)
                 },
                 'variant': {
                     'pnl': self.variant_metrics['pnl'],
                     'activations': self.variant_metrics['activations'],
-                    'sharpe': sharpe(self.variant_metrics)
+                    'sharpe': calculate_sharpe(self.variant_metrics)
                 },
                 'regime': self.regime,
                 'ticks': self.ticks
             }
 
-    def start_ab_test(self, candidate_id, control_dna, variant_dna, start_tick, regime):
-        self.active_tests[candidate_id] = self.ABTest(candidate_id, control_dna, variant_dna, start_tick, regime)
+    def start_ab_test(self, candidate_id: str, control_dna: LogicDNA, variant_dna: LogicDNA, start_tick: int, regime: Optional[Dict[str, str]]) -> None:
+        self.active_tests[candidate_id] = ABTestManager.ABTest(candidate_id, control_dna, variant_dna, start_tick, regime)
 
-    def step_all(self, market_tick):
-        finished = []
-        for cid, abtest in self.active_tests.items():
-            abtest.step(market_tick)
-            if abtest.finished:
-                finished.append(cid)
-        return finished
+    def step_all(self, market_tick: Dict[str, Any]) -> List[str]:
+        finished_tests_ids: List[str] = []
+        for cid, ab_test_instance in self.active_tests.items():
+            ab_test_instance.step(market_tick)
+            if ab_test_instance.finished:
+                finished_tests_ids.append(cid)
+        return finished_tests_ids
 
-    def get_finished(self):
-        return [cid for cid, abtest in self.active_tests.items() if abtest.finished]
+    def get_finished(self) -> List[str]:
+        return [cid for cid, ab_test_instance in self.active_tests.items() if ab_test_instance.finished]
 
-    def pop_finished(self):
-        finished = self.get_finished()
-        results = {cid: self.active_tests.pop(cid).summary() for cid in finished}
-        return results
+    def pop_finished(self) -> Dict[str, Any]:
+        finished_ids: List[str] = self.get_finished()
+        results_dict: Dict[str, Any] = {cid: self.active_tests.pop(cid).summary() for cid in finished_ids}
+        return results_dict
 
 class SystemOrchestrator:
     """
     Minimal v1.0 SystemOrchestrator for Project Crypto Bot Peter.
     Loads configuration, manages LEE and MarketPersonas, and runs evolutionary cycles.
     """
-    def __init__(self, config_file_path: str = None, mode: str = 'FULL_V1_2', performance_log_path: str = 'performance_log_FULL_V1_2.csv'):
-        self.mode = mode
-        self.performance_log_path = performance_log_path
-        self.lee_instance = None
-        self.available_personas = {}
-        self.active_persona_name = None
-        self.current_generation = 0
-        self.mle_instance = None
-        self.ces_instance = None
-        self.current_mle_bias = {}
-        self.current_ces_vector = {}
-        self.priming_generations = 10  # Default, can be overridden by config
-        self._load_config(config_file_path)
-        # Ensure LEE and MLE use the correct log path
-        self.lee_instance.performance_log_path = self.performance_log_path
-        self.mle_instance.performance_log_path = self.performance_log_path
+    def __init__(self, config_file_path: Optional[str] = None, mode: str = 'FULL_V1_2', performance_log_path: str = 'performance_log_FULL_V1_2.csv'):
+        self.logger: logging.Logger = logging.getLogger(__name__) # Ensure logger is initialized
+        self.mode: str = mode
+        self.performance_log_path: str = performance_log_path
+        self.lee_instance: Optional['LEE'] = None
+        self.available_personas: Dict[str, MarketPersona] = {}
+        self.active_persona_name: Optional[str] = None
+        self.current_generation: int = 0
+        self.mle_instance: Optional[MLE_v0_1] = None
+        self.ces_instance: Optional[CES_v1_0] = None
+        self.current_mle_bias: Dict[str, Any] = {}
+        self.current_ces_vector: Dict[str, Any] = {}
+        self.priming_generations: int = 10  # Default, can be overridden by config
+        
+        self.rng_state_load_path: Optional[str] = None
+        self.rng_state_save_path: Optional[str] = None
 
-    def _load_config(self, config_file_path):
-        with open(config_file_path, 'r') as f:
-            config = json.load(f)
-        # Load LEE parameters
-        lee_params = config['lee_params']
-        self.lee_instance = LEE(**lee_params)
-        # Load MarketPersonas
-        personas = config['personas']
-        for name, weights in personas.items():
+        # Attributes for the legacy part of SO, to be typed if kept
+        self.candidate_slots: List[CandidateStrategySlot] = []
+        self.tick_counter: int = 0
+        self.regime_classifier: RegimeClassifier = RegimeClassifier()
+        self.ab_test_manager: ABTestManager = ABTestManager()
+        self.meta_param_monitor: MetaParameterMonitor = MetaParameterMonitor(self) # type: ignore # Pass self if SO is the monitor's target
+        self.candidate_regime_pnl: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        self.candidate_pnl_history: Dict[str, Deque[float]] = defaultdict(lambda: deque(maxlen=SO_SETTINGS.get('ROLLING_PNL_WINDOW_CANDIDATE', 100)))
+        self.known_dna: Dict[str, LogicDNA] = {}
+        self.dormant_stats: Dict[str, Any] = {} # Placeholder for stats of dormant DNA
+        self.tweak_proposals_log: List[Dict[str, Any]] = []
+        self.last_logged_correlation: int = 0
+        self.last_portfolio_snapshot: int = 0
+        self._meta_param_snapshot_counter: int = 0
+        self.critical_errors: List[str] = []
+        self.config: Optional[Dict[str, Any]] = None # Will hold loaded config
+        self.conflict_resolver: Optional[ConflictResolver] = None
+
+
+        if config_file_path:
+            self._load_config(config_file_path)
+        else:
+            self.logger.warning("SystemOrchestrator initialized without a config file path.")
+
+        if self.lee_instance:
+            self.lee_instance.performance_log_path = self.performance_log_path
+        if self.mle_instance:
+            self.mle_instance.performance_log_path = self.performance_log_path
+
+    def _load_config(self, config_file_path: str) -> None:
+        try:
+            with open(config_file_path, 'r') as f:
+                loaded_config: Dict[str, Any] = json.load(f)
+            self.config = loaded_config # Store loaded config
+        except FileNotFoundError:
+            self.logger.critical(f"Configuration file not found at path: {config_file_path}")
+            raise RuntimeError(f"Configuration file not found at path: {config_file_path}")
+        except json.JSONDecodeError as e:
+            self.logger.critical(f"Error decoding JSON configuration file at path: {config_file_path}. Details: {e}")
+            raise RuntimeError(f"Error decoding JSON configuration file at path: {config_file_path}. Details: {e}")
+
+        lee_params: Dict[str, Any] = self.config.get('lee_params', {})
+        self.lee_instance = LEE(**lee_params) # type: ignore # Assuming LEE is correctly imported for TYPE_CHECKING
+
+        personas_config: Dict[str, Dict[str, float]] = self.config.get('personas', {})
+        for name, weights in personas_config.items():
             self.available_personas[name] = MarketPersona(name, weights)
-        # Set initial active persona
-        self.active_persona_name = config.get('initial_active_persona', list(self.available_personas.keys())[0])
-        # Optionally, load seed DNA templates (not implemented for v1.0)
-        self.lee_instance.initialize_population()
+        
+        initial_persona_key: Optional[str] = self.config.get('initial_active_persona')
+        if initial_persona_key and initial_persona_key in self.available_personas:
+            self.active_persona_name = initial_persona_key
+        elif self.available_personas:
+            self.active_persona_name = list(self.available_personas.keys())[0]
+        
+        if self.lee_instance:
+            self.lee_instance.initialize_population() # Assuming seed_dna_templates is optional and handled in LEE
+        
         self.current_generation = 0
-        self.performance_log_path = config.get('performance_log_path', 'performance_log.csv')
+        self.performance_log_path = self.config.get('performance_log_path', self.performance_log_path) 
         self.mle_instance = MLE_v0_1(self.performance_log_path)
         self.ces_instance = CES_v1_0()
-        self.priming_generations = config.get('priming_generations', 10)
-        logging.info(f"SystemOrchestrator initialized. Active persona: {self.active_persona_name}")
+        self.priming_generations = self.config.get('priming_generations', self.priming_generations)
+        
+        resolver_config = self.config.get('conflict_resolver_config', {})
+        self.conflict_resolver = ConflictResolver(resolver_config)
 
-    def set_active_persona(self, persona_name: str):
+        # Load RNG state if path is provided
+        self.rng_state_load_path = self.config.get('rng_state_load_path')
+        self.rng_state_save_path = self.config.get('rng_state_save_path')
+        if self.rng_state_load_path:
+            self.load_rng_state(self.rng_state_load_path)
+        
+        self.logger.info(f"SystemOrchestrator initialized. Active persona: {self.active_persona_name}")
+
+    def set_active_persona(self, persona_name: str) -> None:
         if persona_name in self.available_personas:
             self.active_persona_name = persona_name
-            logging.info(f"Active persona set to: {persona_name}")
+            self.logger.info(f"Active persona set to: {persona_name}")
         else:
+            self.logger.error(f"Persona '{persona_name}' not found in available_personas.")
             raise ValueError(f"Persona '{persona_name}' not found in available_personas.")
 
-    def run_n_generations(self, num_generations: int, market_data_snapshots: list):
-        for gen in range(num_generations):
-            phase = 'Priming' if self.current_generation < self.priming_generations else 'Active Feedback'
-            print(f"\n=== Generation {self.current_generation+1} | Phase: {phase} ===")
-            # Get current market data snapshot
-            current_market_data = market_data_snapshots[gen % len(market_data_snapshots)]
-            # Always ensure performance_log_path is included in market_data_for_evaluation
-            current_market_data = dict(current_market_data)  # Copy to avoid mutating input
-            current_market_data['performance_log_path'] = self.performance_log_path
-            current_market_data['current_generation'] = self.current_generation + 1
-            if self.current_generation < self.priming_generations:
-                # Priming phase: neutral MLE bias, CES with None for MLE input
-                mle_bias = {'seed_motifs': {}, 'recommended_operator_biases': {}}
-                ces_vector = self.ces_instance.calculate_ces_vector(current_market_data, None)
-                self.current_mle_bias = mle_bias
-                self.current_ces_vector = ces_vector
-                print(f"[Priming] CES Vector: {ces_vector}")
-                # Enhanced persona selection logic
-                v = ces_vector.get('volatility', 0.5)
-                t = ces_vector.get('trend', 0.5)
-                l = ces_vector.get('liquidity', 0.5)
-                if v > 0.6 and t > 0.6:
-                    persona_name = 'HUNTER_v1'
-                elif v > 0.7 and l < 0.4:
-                    persona_name = 'GUARDIAN_v1'
-                else:
-                    persona_name = 'HUNTER_v1'
-                self.set_active_persona(persona_name)
-                print(f"[Priming] Persona selected: {self.active_persona_name}")
-                persona = self.available_personas[self.active_persona_name]
-                self.lee_instance.run_evolutionary_cycle(persona, {**current_market_data, 'ces_vector': ces_vector, 'performance_log_path': self.performance_log_path, 'current_generation': self.current_generation+1}, mle_bias, ces_vector)
-                # After evaluation, let MLE learn (but don't use its output yet)
-                try:
-                    self.mle_instance.analyze_recent_performance()
-                except Exception as e:
-                    print(f"[Priming] MLE analysis skipped: {e}")
-            else:
-                # Active feedback phase: use MLE output as input to CES
-                try:
-                    mle_bias = self.mle_instance.analyze_recent_performance()
-                except Exception as e:
-                    print(f"[Active] MLE analysis failed: {e}")
-                    mle_bias = {'seed_motifs': {}, 'recommended_operator_biases': {}}
-                ces_vector = self.ces_instance.calculate_ces_vector(current_market_data, {'pattern_regime_confidence': mle_bias.get('some_mle_confidence_metric', 0.0)})
-                self.current_mle_bias = mle_bias
-                self.current_ces_vector = ces_vector
-                print(f"[Active] CES Vector: {ces_vector}")
-                print(f"[Active] MLE Bias: {mle_bias}")
-                # Enhanced persona selection logic
-                v = ces_vector.get('volatility', 0.5)
-                t = ces_vector.get('trend', 0.5)
-                l = ces_vector.get('liquidity', 0.5)
-                if v > 0.6 and t > 0.6:
-                    persona_name = 'HUNTER_v1'
-                elif v > 0.7 and l < 0.4:
-                    persona_name = 'GUARDIAN_v1'
-                else:
-                    persona_name = 'HUNTER_v1'
-                self.set_active_persona(persona_name)
-                print(f"[Active] Persona selected: {self.active_persona_name}")
-                persona = self.available_personas[self.active_persona_name]
-                self.lee_instance.run_evolutionary_cycle(persona, {**current_market_data, 'ces_vector': ces_vector, 'performance_log_path': self.performance_log_path, 'current_generation': self.current_generation+1}, mle_bias, ces_vector)
-            self.current_generation += 1
-            print(f"Generation {self.current_generation} complete. Active persona: {self.active_persona_name}")
+    def run_n_generations(self, num_generations: int, market_data_snapshots: List[Dict[str, Any]]) -> None:
+        if not self.lee_instance or not self.ces_instance or not self.mle_instance or not self.active_persona_name:
+            self.logger.error("SystemOrchestrator not fully initialized. LEE, CES, MLE, or active_persona might be missing.")
+            return
 
-    def harmonize_influences(self, base_decision_parameters: dict, system_influences: dict) -> dict:
+        for gen_count in range(num_generations):
+            phase: str = 'Priming' if self.current_generation < self.priming_generations else 'Active Feedback'
+            self.logger.info(f"\n=== Generation {self.current_generation + 1} | Phase: {phase} ===")
+            
+            current_market_data_snapshot: Dict[str, Any] = market_data_snapshots[gen_count % len(market_data_snapshots)]
+            eval_data: Dict[str, Any] = dict(current_market_data_snapshot) 
+            eval_data['performance_log_path'] = self.performance_log_path
+            eval_data['current_generation'] = self.current_generation + 1
+
+            mle_output_for_ces: Optional[Dict[str, Any]] = None
+            current_mle_bias_for_lee: Dict[str, Any]
+            
+            if phase == 'Priming':
+                current_mle_bias_for_lee = {'seed_motifs': {}, 'recommended_operator_biases': {}} 
+                current_ces_vector_output: Dict[str, Any] = self.ces_instance.calculate_ces_vector(eval_data, None) 
+                if self.mle_instance: 
+                    try:
+                        self.mle_instance.analyze_recent_performance()
+                    except Exception as e:
+                        self.logger.warning(f"[Priming] MLE analysis skipped due to error: {e}")
+            else: 
+                if self.mle_instance:
+                    try:
+                        current_mle_bias_for_lee = self.mle_instance.analyze_recent_performance()
+                        mle_output_for_ces = {'pattern_regime_confidence': current_mle_bias_for_lee.get('some_mle_confidence_metric', 0.0)}
+                    except Exception as e:
+                        self.logger.warning(f"[Active] MLE analysis failed: {e}. Using neutral bias.")
+                        current_mle_bias_for_lee = {'seed_motifs': {}, 'recommended_operator_biases': {}}
+                else: 
+                     current_mle_bias_for_lee = {'seed_motifs': {}, 'recommended_operator_biases': {}}
+
+                current_ces_vector_output = self.ces_instance.calculate_ces_vector(eval_data, mle_output_for_ces)
+
+            self.current_mle_bias = current_mle_bias_for_lee
+            self.current_ces_vector = current_ces_vector_output
+            self.logger.info(f"[{phase}] CES Vector: {self.current_ces_vector}")
+            if phase == 'Active Feedback': self.logger.info(f"[{phase}] MLE Bias: {self.current_mle_bias}")
+
+            v_ces: float = self.current_ces_vector.get('volatility', 0.5)
+            t_ces: float = self.current_ces_vector.get('trend', 0.5)
+            l_ces: float = self.current_ces_vector.get('liquidity', 0.5)
+            selected_persona_name: str = 'HUNTER_v1' 
+            if v_ces > 0.6 and t_ces > 0.6: selected_persona_name = 'HUNTER_v1'
+            elif v_ces > 0.7 and l_ces < 0.4: selected_persona_name = 'GUARDIAN_v1'
+            
+            self.set_active_persona(selected_persona_name)
+            self.logger.info(f"[{phase}] Persona selected: {self.active_persona_name}")
+            
+            active_persona_instance: MarketPersona = self.available_personas[self.active_persona_name]
+            
+            eval_data_for_lee: Dict[str, Any] = {**eval_data, 'ces_vector': self.current_ces_vector}
+            self.lee_instance.run_evolutionary_cycle(active_persona_instance, eval_data_for_lee, self.current_mle_bias, self.current_ces_vector)
+            
+            self.current_generation += 1
+            self.logger.info(f"Generation {self.current_generation} complete. Active persona: {self.active_persona_name}")
+        
+        if self.rng_state_save_path:
+            self.save_rng_state(self.rng_state_save_path)
+
+    def harmonize_influences(self, base_decision_parameters: Dict[str, Any], system_influences: Dict[str, Any]) -> Dict[str, Any]:
         """
         Harmonizes all system influences into a final set of decision parameters.
         Args:
@@ -467,53 +574,111 @@ class SystemOrchestrator:
         Side effects:
             Logs input and output for traceability.
         """
-        logger.debug(f"ORCHESTRATOR_HARMONIZE_INPUT|base_params={base_decision_parameters}|influences={system_influences}")
-        final_params = base_decision_parameters.copy()
-        # FSM wake threshold integration
-        if 'fsm_wake_threshold' in final_params:
-            base_wake = final_params['fsm_wake_threshold']
-            modified_wake = base_wake
-            if 'persona_wake_factor' in system_influences:
-                modified_wake *= system_influences['persona_wake_factor']
-            if 'env_score_wake_factor' in system_influences:
-                modified_wake *= system_influences['env_score_wake_factor']
-            # Add other influences as needed
-            min_thr = self.config.getfloat('OrchestratorClamps', 'min_fsm_wake_threshold', fallback=0.00001)
-            max_thr = self.config.getfloat('OrchestratorClamps', 'max_fsm_wake_threshold', fallback=0.01)
-            final_params['fsm_wake_threshold'] = np.clip(modified_wake, min_thr, max_thr)
-        # L1 action confidence integration
-        if 'l1_action_confidence' in final_params and 'opportunistic_confidence_boost' in system_influences:
-            base_conf = final_params['l1_action_confidence']
-            boost = system_influences['opportunistic_confidence_boost']
-            modified_conf = base_conf + boost
-            final_params['l1_action_confidence'] = np.clip(modified_conf, 0.0, 1.0)
-        # Anomaly sequence suggestion (MVP: log only)
-        if 'anomaly_sequence_suggestion' in system_influences:
-            logger.info(f"ORCHESTRATOR_SEQUENCE_SUGGESTION|suggestion={system_influences['anomaly_sequence_suggestion']}")
-        # Conflict resolution (stub)
-        if self.conflict_resolver.detect_conflicts(final_params, system_influences):
-            final_params = self.conflict_resolver.resolve(final_params, system_influences)
-        logger.info(f"ORCHESTRATOR_HARMONIZED_OUTPUT|final_params={final_params}")
+        self.logger.debug(f"ORCHESTRATOR_HARMONIZE_INPUT|base_params={base_decision_parameters}|influences={system_influences}")
+        final_params: Dict[str, Any] = base_decision_parameters.copy()
+
+        if self.config and self.conflict_resolver : 
+            if 'fsm_wake_threshold' in final_params:
+                base_wake: float = final_params['fsm_wake_threshold']
+                modified_wake: float = base_wake
+                if 'persona_wake_factor' in system_influences: modified_wake *= system_influences['persona_wake_factor']
+                if 'env_score_wake_factor' in system_influences: modified_wake *= system_influences['env_score_wake_factor']
+                
+                min_thr: float = self.config.get('OrchestratorClamps', {}).get('min_fsm_wake_threshold', 0.00001)
+                max_thr: float = self.config.get('OrchestratorClamps', {}).get('max_fsm_wake_threshold', 0.01)
+                final_params['fsm_wake_threshold'] = np.clip(modified_wake, min_thr, max_thr) # type: ignore
+
+            if 'l1_action_confidence' in final_params and 'opportunistic_confidence_boost' in system_influences:
+                base_conf: float = final_params['l1_action_confidence']
+                boost: float = system_influences['opportunistic_confidence_boost']
+                modified_conf: float = base_conf + boost
+                final_params['l1_action_confidence'] = np.clip(modified_conf, 0.0, 1.0) # type: ignore
+            
+            if 'anomaly_sequence_suggestion' in system_influences:
+                self.logger.info(f"ORCHESTRATOR_SEQUENCE_SUGGESTION|suggestion={system_influences['anomaly_sequence_suggestion']}")
+
+            if self.conflict_resolver.detect_conflicts(final_params, system_influences):
+                final_params = self.conflict_resolver.resolve(final_params, system_influences)
+        else:
+            self.logger.warning("Configuration or ConflictResolver not loaded. Harmonization may be incomplete.")
+
+        self.logger.info(f"ORCHESTRATOR_HARMONIZED_OUTPUT|final_params={final_params}")
         return final_params
 
-    def promote_to_candidate_slot(self, graduated_entry):
-        if len(self.candidate_slots) < MAX_CANDIDATE_SLOTS:
-            slot = CandidateStrategySlot(graduated_entry)
-            self.candidate_slots.append(slot)
-            self.logger.info(f"SO: Promoted DNA to candidate slot: {slot.dna} | ParentID={slot.dna.parent_id}")
-            self.log_event_snapshot('GRADUATION', slot.dna, graduated_entry)
-        else:
-            # Replace worst performing candidate
-            worst_idx = min(range(len(self.candidate_slots)), key=lambda i: self.candidate_slots[i].pnl_candidate)
-            self.logger.info(f"SO: Candidate slots full. Demoting worst: {self.candidate_slots[worst_idx].dna}")
-            self.log_event_snapshot('DEMOTION', self.candidate_slots[worst_idx].dna, self.candidate_slots[worst_idx])
-            self.candidate_slots.pop(worst_idx)
-            slot = CandidateStrategySlot(graduated_entry)
-            self.candidate_slots.append(slot)
-            self.logger.info(f"SO: Promoted DNA to candidate slot: {slot.dna} | ParentID={slot.dna.parent_id}")
-            self.log_event_snapshot('GRADUATION', slot.dna, graduated_entry)
+    def save_rng_state(self, filepath: str) -> None:
+        """Saves the current RNG state to the specified filepath."""
+        if not filepath:
+            self.logger.warning("RNG state save path not provided. Skipping save.")
+            return
+        try:
+            rng_state = random.getstate()
+            with open(filepath, 'wb') as f:
+                pickle.dump(rng_state, f)
+            self.logger.info(f"RNG state saved to {filepath}")
+        except IOError as e:
+            self.logger.error(f"Error saving RNG state to {filepath}: {e}")
+        except pickle.PicklingError as e:
+            self.logger.error(f"Error pickling RNG state for saving to {filepath}: {e}")
+        except Exception as e:
+            self.logger.error(f"An unexpected error occurred while saving RNG state to {filepath}: {e}")
 
-    def evaluate_candidates_per_tick(self, market_tick, recent_market_data=None):
+    def load_rng_state(self, filepath: str) -> None:
+        """Loads the RNG state from the specified filepath."""
+        if not filepath:
+            self.logger.warning("RNG state load path not provided. Skipping load.")
+            return
+        if not os.path.exists(filepath):
+            self.logger.warning(f"RNG state file not found at {filepath}. Skipping load.")
+            return
+        try:
+            with open(filepath, 'rb') as f:
+                rng_state = pickle.load(f)
+            random.setstate(rng_state)
+            self.logger.info(f"RNG state loaded from {filepath}")
+        except IOError as e:
+            self.logger.error(f"Error loading RNG state from {filepath}: {e}")
+        except pickle.UnpicklingError as e:
+            self.logger.error(f"Error unpickling RNG state from {filepath}: {e}")
+        except Exception as e:
+            self.logger.error(f"An unexpected error occurred while loading RNG state from {filepath}: {e}")
+
+    def promote_to_candidate_slot(self, graduated_entry: 'PoolDNAEntry') -> None:
+        pool_pnl: Any = getattr(graduated_entry, 'rolling_pnl_pool', 'N/A')
+        pool_activations: Any = getattr(graduated_entry, 'activation_count_pool', 'N/A')
+        promoted_dna_id: str = graduated_entry.dna.id # type: ignore
+        promoted_parent_id: Optional[str] = graduated_entry.dna.parent_id # type: ignore
+
+        if len(self.candidate_slots) < MAX_CANDIDATE_SLOTS:
+            new_slot: CandidateStrategySlot = CandidateStrategySlot(graduated_entry)
+            self.candidate_slots.append(new_slot)
+            self.logger.info(
+                f"SO: Promoting DNA {promoted_dna_id} to a new candidate slot. "
+                f"ParentID={promoted_parent_id}. "
+                f"Pool Performance: PnL={pool_pnl}, Activations={pool_activations}."
+            )
+            self.log_event_snapshot('GRADUATION', new_slot.dna, graduated_entry) # type: ignore
+        else:
+            worst_slot_idx: int = min(range(len(self.candidate_slots)), key=lambda i: self.candidate_slots[i].pnl_candidate)
+            demoted_slot_instance: CandidateStrategySlot = self.candidate_slots[worst_slot_idx]
+            demoted_dna_id_str: str = demoted_slot_instance.dna.id # type: ignore
+            
+            self.logger.info(
+                f"SO: Candidate slots full. Demoting worst performing candidate: "
+                f"DNA {demoted_dna_id_str}, PnL={demoted_slot_instance.pnl_candidate:.2f}, Sharpe={demoted_slot_instance.sharpe_candidate:.2f}."
+            )
+            self.log_event_snapshot('DEMOTION', demoted_slot_instance.dna, demoted_slot_instance) # type: ignore
+            self.candidate_slots.pop(worst_slot_idx)
+            
+            new_slot_replacing: CandidateStrategySlot = CandidateStrategySlot(graduated_entry)
+            self.candidate_slots.append(new_slot_replacing)
+            self.logger.info(
+                f"SO: Promoting DNA {promoted_dna_id} to replace demoted candidate {demoted_dna_id_str}. "
+                f"ParentID={promoted_parent_id}. "
+                f"Pool Performance: PnL={pool_pnl}, Activations={pool_activations}."
+            )
+            self.log_event_snapshot('GRADUATION', new_slot_replacing.dna, graduated_entry) # type: ignore
+
+    def evaluate_candidates_per_tick(self, market_tick: Dict[str, Any], recent_market_data: Optional[List[Dict[str, Any]]] = None) -> None:
         self.tick_counter += 1
         # Regime classification
         price = market_tick.get('price', None)
