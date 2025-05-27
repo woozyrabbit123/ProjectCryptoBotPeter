@@ -1,3 +1,12 @@
+"""
+Fitness Evaluation for Project Crypto Bot Peter.
+
+This module provides functions to evaluate the fitness of a trading strategy
+(represented as LogicDNA) based on its performance in simulations (e.g.,
+nanostrat_results) and other factors like system resource usage (e.g., CPU load).
+The fitness score helps determine which strategies are promising and should be
+further explored or promoted by the evolutionary algorithms.
+"""
 import logging
 
 def evaluate_dna_fitness(nanostrat_results, cpu_load):

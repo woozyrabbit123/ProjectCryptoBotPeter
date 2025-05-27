@@ -1,3 +1,12 @@
+"""
+Nano-Strategy Tester for Project Crypto Bot Peter.
+
+This module provides a lightweight, fast simulation environment (`run_nanostrat_test`)
+for quickly evaluating the basic trigger logic of a single LogicDNA instance
+against a small segment of market data. It's designed for rapid feedback
+during the initial stages of DNA generation or mutation, focusing on trigger
+activation and rudimentary P&L assessment without full portfolio simulation.
+"""
 import logging
 
 def run_nanostrat_test(dna_instance, market_data_segment):

@@ -2,6 +2,7 @@ from src.data_handling import load_ohlcv_csv, calculate_indicators
 from src.system_orchestrator import SystemOrchestrator
 import os
 import argparse
+from src.utils.logging_utils import setup_global_logging # Added
 
 def run_v1_1_core_demo():
     print("DEBUG: Entering run_v1_1_core_demo function")
@@ -46,4 +47,5 @@ def run_v1_1_core_demo():
     print(f"Performance log written to: {performance_log_path}")
 
 if __name__ == "__main__":
+    setup_global_logging() # Added
     run_v1_1_core_demo() 
