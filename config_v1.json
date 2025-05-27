@@ -1,0 +1,18 @@
+{
+  "lee_params": {
+    "population_size": 10,
+    "mutation_rate_parametric": 0.1,
+    "mutation_rate_structural": 0.2,
+    "crossover_rate": 0.3,
+    "elitism_percentage": 0.2,
+    "random_injection_percentage": 0.1,
+    "max_depth": 4,
+    "max_nodes": 9,
+    "complexity_weights": {"nodes": 0.5, "depth": 0.5}
+  },
+  "personas": {
+    "HUNTER_v1": {"metric_profit": 0.7, "metric_for_trades": 0.3, "complexity_penalty_weight": -0.05},
+    "GUARDIAN_v1": {"metric_profit": 0.3, "metric_for_trades": 0.1, "complexity_penalty_weight": -0.1, "drawdown": -0.6}
+  },
+  "initial_active_persona": "HUNTER_v1"
+} 

@@ -1,0 +1,106 @@
+Document 2: Project Crypto Bot Peter – Implementation Guidance for Cursor AI (v1.0 Core System)
+Version: 1.0
+Date: May 26, 2025
+Project: Project Crypto Bot Peter
+Author: Gemini Strategist
+Target Audience: Cursor AI (for Python implementation)
+1. Introduction
+This document provides detailed technical guidance for implementing the v1.0 Core Evolutionary System of Project Crypto Bot Peter, as specified in Project_Crypto_Bot_Peter_v1_Core_Specification.txt. The focus is on Python implementation, suggesting class structures, key methods, and logic flows.
+2. Core Data Structures & Classes
+2.1. MarketDataSnapshot (Illustrative Data Class)
+A simple class or dictionary to hold market information needed for LogicDNA evaluation at a given point in time.
+Attributes (example): timestamp, prices_ohlcv (dict of assets), indicators (dict where keys are indicator_id_lookback1_lookback2 and values are the calculated indicator values).
+2.2. LogicNode (Base Class & Subtypes)
+LogicNode (Abstract Base Class):
+Attributes: node_id (UUID), parent_id (UUID, optional).
+Methods (Abstract): evaluate(market_state: MarketDataSnapshot, available_indicators: dict) -> Any, to_string() -> str, copy() -> LogicNode.
+ConditionNode(LogicNode):
+Attributes: indicator_id: str, comparison_operator: EnumComparisonOperator, threshold_value: float, lookback_period_1: int, lookback_period_2: int = None.
+evaluate() method: Fetches required indicator value(s) from available_indicators (or triggers calculation if market_state provides raw data and an indicator calculation library is used). Performs comparison, returns True or False.
+ActionNode(LogicNode):
+Attributes: action_type: EnumActionType, size_factor: float.
+evaluate() method: Returns a tuple like (self.action_type, self.size_factor).
+CompositeNode(LogicNode):
+Attributes: logical_operator: EnumLogicalOperator, child1: LogicNode, child2: LogicNode.
+evaluate() method: Recursively calls evaluate() on child1 and child2, then applies logical_operator (AND/OR). Returns True or False.
+SequenceNode(LogicNode):
+Attributes: child1: LogicNode, child2: LogicNode.
+evaluate() method: Evaluates child1. If child1 evaluates to True (or if child1 is an Action/Sequence/Composite node that "completes"), then evaluates and returns the result of child2. If child1 is False (for Condition nodes), the sequence may terminate and return a "sequence failed" or default value. The exact return type for "no action completed" needs careful definition.
+2.3. LogicDNA (The Tree)
+Attributes: dna_id (UUID), root_node: LogicNode, generation_born: int.
+Methods:
+evaluate(market_state: MarketDataSnapshot, available_indicators: dict) -> tuple: Traverses the tree starting from root_node by calling its evaluate() method. Returns the final trading action or a "NO_ACTION" signal.
+calculate_complexity() -> tuple[int, int]: Returns (node_count, tree_depth).
+to_string_representation() -> str: For logging or visualization.
+copy() -> LogicDNA: Deep copies the tree.
+get_random_node() -> LogicNode: Utility to select a random node.
+get_random_subtree_point() -> LogicNode: Utility to select a random node suitable for subtree operations.
+replace_node(old_node_id: UUID, new_node: LogicNode)
+add_node_at_point(parent_node_id: UUID, child_index: int, new_node: LogicNode) (ensure validity).
+prune_subtree(node_id_to_prune: UUID) (ensure validity, possibly replace with default Action(HOLD)).
+is_valid(max_depth: int, max_nodes: int) -> bool: Checks structural integrity.
+2.4. MarketPersona
+Attributes: name: str, fitness_weights: dict (e.g., {'profit': 0.6, 'trade_frequency': 0.3, 'complexity_penalty_weight': 0.1}).
+Methods:
+calculate_fitness(performance_metrics: dict, complexity_score: float) -> float: Applies weights to metrics and subtracts weighted complexity penalty. performance_metrics could include total_profit, avg_profit_per_trade, num_trades, sharpe_ratio, max_drawdown.
+2.5. LEE (Logic Evolution Engine)
+Attributes: population: list[LogicDNA], population_size: int, mutation_rate_parametric: float, mutation_rate_structural: float, crossover_rate: float, elitism_percentage: float, random_injection_percentage: float, max_depth: int, max_nodes: int, complexity_weights: dict (for calculating penalty).
+Methods:
+initialize_population(): Creates the initial population (hybrid seeding: random + predefined templates).
+run_evolutionary_cycle(active_persona: MarketPersona, market_data_for_evaluation: list[MarketDataSnapshot]):
+_evaluate_population(active_persona, market_data_for_evaluation): For each LogicDNA, run backtest/shadow trade to get performance metrics. Calculate complexity. Calculate fitness using active_persona.calculate_fitness(). Store fitness with each LogicDNA.
+_select_parents(): Implements selection (e.g., tournament). Incorporates elitism (copy best N individuals) and ensures some random individuals from the broader pool are selected for mating to maintain diversity.
+_reproduce(parents: list[LogicDNA]) -> list[LogicDNA]:
+Loop to create population_size - num_elites - num_random_injections offspring.
+With crossover_rate probability, select two parents and perform _crossover_trees().
+With mutation_rate_structural probability, apply _structural_mutation() to offspring.
+Always apply _parametric_mutation() to offspring.
+Ensure all new offspring are validated (is_valid()).
+Replace old population with elites + offspring + new random individuals.
+_parametric_mutation(tree: LogicDNA): Modifies parameters of nodes.
+_structural_mutation(tree: LogicDNA) -> LogicDNA: Selects one of the structural mutation types (add/replace, remove/prune) and applies it. Must return a new, valid tree.
+_crossover_trees(parent1: LogicDNA, parent2: LogicDNA) -> tuple[LogicDNA, LogicDNA]: Performs subtree exchange. Must return new, valid offspring.
+Helper methods for generating random valid nodes/subtrees respecting constraints.
+2.6. SystemOrchestrator (v1.0 Minimal)
+Attributes: active_persona: MarketPersona, lee_instance: LEE, available_personas: list[MarketPersona].
+Methods:
+set_active_persona(persona_name: str)
+run_next_evolution_cycle(market_data_for_evaluation): Calls lee_instance.run_evolutionary_cycle().
+load_configurations(): Loads parameters for LEE, Personas, etc.
+3. Key Logic Flows & Considerations
+Tree Generation & Validation: This is the most complex part. LEE's mutation and crossover operators need robust logic to ensure they always produce trees that adhere to max_depth, max_nodes, and node type rules (e.g., Actions are leaves, Composites/Sequences have two children). Consider:
+Operators might need to attempt an operation and then call tree.is_valid(). If invalid, retry N times or revert.
+Alternatively, design generation functions that build valid structures from the ground up (e.g., create_random_valid_condition_branch(current_depth, max_depth)).
+Indicator Calculation: The LogicDNA.evaluate() method will need access to indicator values. Decide if:
+MarketDataSnapshot comes with all potentially needed indicators pre-calculated.
+LogicDNA.evaluate() triggers on-the-fly calculation via a shared indicator library, passing raw price data from MarketDataSnapshot. (The former is simpler for v1.0 if the indicator set is small).
+Backtesting/Evaluation Environment: LEE._evaluate_population() needs a way to simulate trades based on LogicDNA actions over historical data to get performance metrics. This can start simple (e.g., process a list of historical candles) and become more sophisticated later.
+Configuration Management: Use configuration files (e.g., JSON, YAML) for LEE parameters, Persona weights, structural constraints, etc., loaded by the SystemOrchestrator.
+4. Initial Testing Considerations (for Peter to guide Cursor)
+Unit Tests:
+Test individual node evaluate() methods with mock market data.
+Test LogicDNA.evaluate() for simple, known trees.
+Test LogicDNA.calculate_complexity().
+Test LogicDNA.is_valid() with various valid and invalid tree structures.
+Test individual LEE genetic operators: do they produce valid offspring? Do they modify trees as expected?
+Test MarketPersona.calculate_fitness() with sample metrics.
+Integration Tests (Simple):
+Can LEE initialize a valid random population?
+Can LEE run a full evolutionary cycle without errors?
+Does average fitness generally improve over a few generations with a simple problem?
+Does the complexity penalty appear to influence tree sizes?
+5. Implementation Order Suggestion
+Enums for ActionType, ComparisonOperator, LogicalOperator.
+LogicNode base class and its subtypes (ConditionNode, ActionNode, CompositeNode, SequenceNode). Focus on their attributes and simple evaluate() stubs.
+LogicDNA class, including calculate_complexity(), is_valid(), and a basic recursive evaluate() that calls node evaluation.
+MarketPersona class and fitness calculation.
+LEE class:
+Start with population initialization (random valid trees are key).
+Implement _evaluate_population (requires a minimal backtester stub).
+Implement selection.
+Implement parametric mutation.
+Implement one structural mutation (e.g., node replacement) and one crossover (subtree exchange), ensuring they produce valid trees.
+Complete the run_evolutionary_cycle loop.
+SystemOrchestrator (minimal version for configuration and triggering cycles).
+Refine and test thoroughly.
+This guidance provides a substantial starting point for Cursor AI. Peter, you will likely need to break this down further into smaller, iterative tasks for Cursor, focusing on one class or method at a time and testing as you go. Good luck with the build!

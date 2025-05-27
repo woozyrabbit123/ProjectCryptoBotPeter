@@ -1,0 +1,71 @@
+Document 1: Project Crypto Bot Peter – Finalized v1.0 Core System Specification (Build Specification)
+Version: 1.0
+Date: May 26, 2025
+Project: Project Crypto Bot Peter
+Author: Gemini Strategist (Synthesized from Human Orchestrator & AI Collaborator Inputs)
+1. Introduction & Purpose
+This document specifies the requirements for the v1.0 Core Evolutionary System of Project Crypto Bot Peter. The goal of this v1.0 system is to establish the foundational capabilities for evolving tree-based trading logic (LogicDNA) under the guidance of dynamic Market Persona fitness functions, managed by a Logic Evolution Engine (LEE). This version emphasizes leanness, modularity, and the core mechanisms for structural and parametric evolution.
+2. Core Components & Requirements
+2.1. LogicDNA: Evolvable Tree-Based Trading Logic
+2.1.1. Representation: LogicDNA shall be represented as a tree structure.
+2.1.2. Core Node Types: The following node types must be supported:
+Condition Node: Evaluates a market condition to produce a boolean result.
+Required Parameters: indicator_id (string/enum; e.g., "SMA", "RSI", "VOLUME", "PRICE_CHANGE"), comparison_operator (enum; e.g., GREATER_THAN, LESS_THAN, EQUAL_TO, CROSSES_ABOVE, CROSSES_BELOW), threshold_value (float), lookback_period_1 (int), lookback_period_2 (int, optional, for indicators requiring two periods like crossovers).
+Output: Boolean.
+Action Node: Specifies a trading action. Must be a leaf node.
+Required Parameters: action_type (enum; e.g., BUY, SELL, HOLD, INCREASE_POSITION, DECREASE_POSITION), size_factor (float, typically 0.0-1.0, representing a fraction of available risk capital or position).
+Output: An action directive.
+Composite Node (Logical AND/OR): Combines the boolean results of exactly two child nodes (typically Condition or other Composite nodes).
+Required Parameters: logical_operator (enum: AND, OR), child1_ref (reference to first child node), child2_ref (reference to second child node).
+Output: Boolean.
+Sequence Node (Optional v1.0 Hook): Executes exactly two child nodes in a defined order. The first child typically evaluates a condition; if true (or if no condition), the second child (typically an Action node or another Sequence/Composite node) is executed.
+Required Parameters: child1_ref, child2_ref.
+Output: The output of the second child if the sequence completes, otherwise depends on implementation (e.g., boolean indicating completion or specific "no action").
+2.1.3. Structural Constraints (Default, Configurable):
+Maximum Tree Depth: 4 levels (root node is level 1).
+Maximum Nodes per Tree: 9 nodes.
+Action Nodes: Must always be leaf nodes.
+Composite/Sequence Nodes: Must have exactly two children.
+2.1.4. Evaluation Method (LogicDNA.evaluate(market_state)):
+Each LogicDNA tree instance must implement a method that recursively traverses its nodes.
+This method takes the current market_state (containing necessary price data, pre-calculated indicator values for referenced indicator_ids, etc.) as input.
+It must return a clear trading decision, e.g., (action: EnumActionType, size: float) or a distinct "NO_ACTION" signal. The evaluation logic will depend on the tree structure (e.g., for a Condition node, evaluate the condition; for an Action node, return its action; for Composite/Sequence, evaluate children according to operator logic).
+2.2. LEE (Logic Evolution Engine): Evolutionary Algorithm
+2.2.1. Population Management: LEE shall manage a population of LogicDNA individuals.
+2.2.2. Evolutionary Cycle: LEE shall implement an evolutionary cycle including:
+Fitness Evaluation: Using Market Persona fitness functions (see 2.3).
+Selection: Implementing a selection mechanism to choose parents for the next generation (e.g., tournament selection, roulette wheel, incorporating elitism + random individuals for diversity – see 2.4.2).
+Genetic Operators: Applying crossover and mutation operators (see 2.2.3).
+Replacement: Forming the new generation.
+2.2.3. Genetic Operators (v1.0):
+Parametric Mutation: Modifies the numerical parameters of indicator_id, threshold_value, lookback_period_1/2 in Condition Nodes, and size_factor in Action Nodes, within predefined valid ranges.
+Structural Mutation (minimum 2 distinct types):
+Node Addition/Replacement: Randomly selects a point in the tree and adds a new, randomly generated valid node (Condition, Action, Composite, Sequence) or replaces an existing node (and its subtree if applicable) with a new, randomly generated valid one. Must respect structural constraints.
+Node/Subtree Removal/Pruning: Randomly selects a node (and its subtree if applicable) and removes it, ensuring the resulting tree remains valid (e.g., by replacing with a default Action(HOLD) node or re-linking parent to a valid child). Must respect structural constraints (e.g., minimum node count if any).
+Structural Crossover (minimum 1 type):
+Single-Point Subtree Exchange: Selects a random valid subtree from two parent LogicDNA individuals and swaps them to create two offspring. Offspring must be validated against structural constraints.
+2.2.4. Tree Validation & Constraint Enforcement: All genetic operators that modify tree structure must ensure that the resulting LogicDNA trees are valid and adhere to the defined structural constraints (depth, node count, node type rules). Invalid trees must be rejected or repaired by the operator.
+2.3. MarketPersona: Dynamic Fitness Landscapes
+2.3.1. Concept: Personas (e.g., "Agile HUNTER," "Steady GUARDIAN") define the objectives for LogicDNA evolution by providing distinct fitness functions.
+2.3.2. Fitness Function: Each Persona will have a method calculate_fitness(logic_dna_performance_metrics, complexity_score) that takes the performance results of a LogicDNA individual (from backtesting/shadow trading) and its complexity score, and returns a single numerical fitness value.
+2.3.3. Example Fitness Formulations (v1.0):
+Agile HUNTER: Weighted sum emphasizing profit metrics (e.g., average profit per trade, total profit) and trade frequency, minus a complexity penalty. fitness_H = (wH1 * metric_profit) + (wH2 * metric_trade_frequency) - (wHc * complexity_score_penalty)
+Steady GUARDIAN: Weighted sum emphasizing risk-adjusted return (e.g., Sharpe ratio) and minimizing drawdown, minus a complexity penalty. fitness_G = (wG1 * metric_sharpe_ratio) - (wG2 * metric_max_drawdown) - (wGc * complexity_score_penalty)
+(Initial weights wXn are configurable).
+2.4. Complexity Management & Diversity Preservation (v1.0)
+2.4.1. Complexity Metric & Penalty:
+A complexity score shall be calculated for each LogicDNA tree.
+Formula (v1.0): complexity_score = (w_nodes * node_count) + (w_depth * tree_depth). (Initial weights w_nodes, w_depth are configurable).
+This score is used as a penalty term in the Persona fitness functions.
+2.4.2. Diversity Preservation Mechanism:
+LEE's selection mechanism shall incorporate a method to preserve genetic diversity, such as:
+Elitism: Carrying over a percentage of the fittest individuals from the previous generation.
+Random Selection: Ensuring a portion of the new population is generated from randomly selected (potentially less fit but diverse) parents or by injecting newly randomized individuals.
+2.5. SystemOrchestrator (Minimal v1.0 Role)
+2.5.1. Active Persona Management: The SystemOrchestrator shall be responsible for determining and setting the active MarketPersona whose fitness function LEE will use for the current evolutionary cycle or period. (For v1.0, this can be a simple rotation or manual setting; CES-driven selection is v1.Next).
+2.5.2. Configuration Hub: May serve as a central point for system configurations (e.g., LEE parameters, Persona weights, structural constraints).
+3. Non-Functional Requirements (v1.0)
+3.1. Leanness & Efficiency: Implementations should be mindful of CPU and memory usage, suitable for running on typical local desktop hardware.
+3.2. Modularity: Components (LogicDNA, LEE, MarketPersona, SystemOrchestrator) should be designed as distinct modules with clear interfaces to facilitate testing and future extensions.
+3.3. Configurability: Key parameters (e.g., population size, mutation/crossover rates, Persona fitness weights, structural constraints, complexity penalty weights) shall be configurable.
+3.4. Logging: Basic logging of evolutionary progress (e.g., generation number, average/best fitness) and significant events (e.g., Persona switch) is required.

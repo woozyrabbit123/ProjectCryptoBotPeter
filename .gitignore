@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyd
+*.so
+venv/
+env/
+.venv/  <-- Make sure this line is here!
+
+# Data & Logs (Do NOT commit large data files or logs to Git)
+data/
+performance_log*.csv
+test_performance_log.csv
+*.log
+
+# Models (If you have large trained models)
+models/
+
+# Specific project files you might not want to track (if applicable)
+config.ini
+project_peter_run_data.jsonl
+run_summary.json
