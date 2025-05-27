@@ -1,3 +1,33 @@
+"""
+System Orchestrator for Project Crypto Bot Peter.
+
+This module defines the `SystemOrchestrator` class, which acts as the central
+coordinator for the trading bot. It is responsible for:
+- Loading and validating system configurations.
+- Initializing and managing other core modules such as the Logic Evolution
+  Engine (LEE), Meta-Learning Engine (MLE), and Contextual Environment
+  Scorer (CES).
+- Managing the lifecycle of trading strategy candidates, including promotion,
+  demotion, and A/B testing.
+- Orchestrating the overall system flow, including evolutionary cycles and
+  the application of market personas.
+- Handling RNG state for reproducibility.
+"""
+"""
+System Orchestrator for Project Crypto Bot Peter.
+
+This module defines the `SystemOrchestrator` class, which acts as the central
+coordinator for the trading bot. It is responsible for:
+- Loading and validating system configurations.
+- Initializing and managing other core modules such as the Logic Evolution
+  Engine (LEE), Meta-Learning Engine (MLE), and Contextual Environment
+  Scorer (CES).
+- Managing the lifecycle of trading strategy candidates, including promotion,
+  demotion, and A/B testing.
+- Orchestrating the overall system flow, including evolutionary cycles and
+  the application of market personas.
+- Handling RNG state for reproducibility.
+"""
 import logging
 import numpy as np
 import math
@@ -12,6 +42,8 @@ from typing import List, Dict, Optional, Any, Tuple, Deque, TYPE_CHECKING
 import random
 import pickle
 import os
+import numpy as np # Added
+import atexit # Added
 
 from src.meta_parameter_monitor import MetaParameterMonitor
 import settings  # <-- Add this import
@@ -21,10 +53,11 @@ from src.market_persona import MarketPersona
 from src.logic_dna import LogicDNA_v1
 from src.mle_engine import MLE_v0_1
 from src.ces_module import CES_v1_0
+from src.lee import LEE # Moved out of TYPE_CHECKING
 
 
 if TYPE_CHECKING:
-    from src.lee import LEE
+    # from src.lee import LEE # Moved out
     from src.experimental_pool import PoolDNAEntry # Assuming this is the type of graduated_entry
 
 logger = logging.getLogger(__name__)
@@ -399,6 +432,26 @@ class SystemOrchestrator:
     """
     Minimal v1.0 SystemOrchestrator for Project Crypto Bot Peter.
     Loads configuration, manages LEE and MarketPersonas, and runs evolutionary cycles.
+
+    RNG State Management:
+        This feature allows for saving and loading the state of the pseudo-random
+        number generator (RNG) used by the `random` module. This is crucial for
+        ensuring the reproducibility of experiments or specific simulation runs.
+
+        To enable this feature:
+        1.  Set `rng_state_load_path` in the configuration file to the path of an
+            existing RNG state file if you wish to start with a specific RNG state.
+        2.  Set `rng_state_save_path` in the configuration file to the path where
+            the RNG state should be saved at the end of a run.
+
+        The `load_rng_state` method is called during initialization if
+        `rng_state_load_path` is provided. The `save_rng_state` method is called
+        at the end of `run_n_generations` if `rng_state_save_path` is provided.
+
+        Security Note:
+            RNG state files (often using pickle) should only be loaded from
+            trusted sources, as loading a malicious pickle file can lead to
+            arbitrary code execution.
     """
     def __init__(self, config_file_path: Optional[str] = None, mode: str = 'FULL_V1_2', performance_log_path: str = 'performance_log_FULL_V1_2.csv'):
         self.logger: logging.Logger = logging.getLogger(__name__) # Ensure logger is initialized
@@ -458,8 +511,42 @@ class SystemOrchestrator:
             self.logger.critical(f"Error decoding JSON configuration file at path: {config_file_path}. Details: {e}")
             raise RuntimeError(f"Error decoding JSON configuration file at path: {config_file_path}. Details: {e}")
 
-        lee_params: Dict[str, Any] = self.config.get('lee_params', {})
-        self.lee_instance = LEE(**lee_params) # type: ignore # Assuming LEE is correctly imported for TYPE_CHECKING
+        # --- Validate and initialize LEE ---
+        lee_params_config = self.config.get('lee_params')
+        if not isinstance(lee_params_config, dict):
+            msg = "Config Error: 'lee_params' section is missing or not a dictionary."
+            self.logger.critical(msg)
+            raise ValueError(msg)
+
+        required_lee_keys_types = {
+            'population_size': (int, lambda x: x > 0),
+            'mutation_rate_parametric': (float, lambda x: 0.0 <= x <= 1.0),
+            'mutation_rate_structural': (float, lambda x: 0.0 <= x <= 1.0),
+            'crossover_rate': (float, lambda x: 0.0 <= x <= 1.0),
+            'elitism_percentage': (float, lambda x: 0.0 <= x <= 1.0),
+            'random_injection_percentage': (float, lambda x: 0.0 <= x <= 1.0),
+            'max_depth': (int, lambda x: x > 0),
+            'max_nodes': (int, lambda x: x > 0),
+            'complexity_weights': (dict, None) # Basic dict check, deeper validation if needed
+        }
+
+        for key, (expected_type, condition) in required_lee_keys_types.items():
+            value = lee_params_config.get(key)
+            if value is None: # Check for missing key first
+                msg = f"Config Error: 'lee_params' is missing required key: '{key}'"
+                self.logger.critical(msg)
+                raise KeyError(msg)
+            if not isinstance(value, expected_type):
+                msg = f"Config Error: 'lee_params.{key}' must be type {expected_type.__name__}. Found: {type(value).__name__} ({value})"
+                self.logger.critical(msg)
+                raise ValueError(msg)
+            if condition and not condition(value):
+                msg = f"Config Error: 'lee_params.{key}' value {value} is not valid (e.g., out of range)."
+                self.logger.critical(msg)
+                raise ValueError(msg)
+        
+        self.lee_instance = LEE(**lee_params_config)
+        # --- End LEE validation and initialization ---
 
         personas_config: Dict[str, Dict[str, float]] = self.config.get('personas', {})
         for name, weights in personas_config.items():
@@ -487,9 +574,101 @@ class SystemOrchestrator:
         self.rng_state_load_path = self.config.get('rng_state_load_path')
         self.rng_state_save_path = self.config.get('rng_state_save_path')
         if self.rng_state_load_path:
-            self.load_rng_state(self.rng_state_load_path)
+            self.load_rng_state(self.rng_state_load_path) # load_rng_state already handles path validation for loading
         
+        # Validate the loaded configuration
+        if self.config: # Ensure config is loaded before validation
+            self._validate_config(self.config)
+
+        if self.rng_state_save_path:
+            # Define a small wrapper function to pass the filepath and a shutdown context
+            def _save_rng_on_exit():
+                self.logger.info("Attempting to save RNG state on script exit...")
+                self.save_rng_state(filepath=self.rng_state_save_path, shutdown_mode=True)
+
+            atexit.register(_save_rng_on_exit)
+            self.logger.info(f"RNG state saving registered for exit. Path: {self.rng_state_save_path}")
+
         self.logger.info(f"SystemOrchestrator initialized. Active persona: {self.active_persona_name}")
+
+    def _validate_config(self, config_data: Dict[str, Any]) -> None:
+        """
+        Validates critical configuration parameters.
+        Raises exceptions if validation fails.
+        """
+        self.logger.info("Validating configuration...")
+
+        # Validate "lee_params"
+        lee_params = config_data.get('lee_params')
+        if not isinstance(lee_params, dict):
+            msg = "Config Error: 'lee_params' section is missing or not a dictionary."
+            self.logger.critical(msg)
+            raise ValueError(msg)
+
+        pop_size = lee_params.get('population_size')
+        if not isinstance(pop_size, int) or pop_size <= 0:
+            msg = f"Config Error: 'lee_params.population_size' must be an integer > 0. Found: {pop_size}"
+            self.logger.critical(msg)
+            raise ValueError(msg)
+        
+        max_depth = lee_params.get('max_depth')
+        if not isinstance(max_depth, int) or max_depth <= 0:
+            msg = f"Config Error: 'lee_params.max_depth' must be an integer > 0. Found: {max_depth}"
+            self.logger.critical(msg)
+            raise ValueError(msg)
+        
+        # Validate "personas" existence (basic check)
+        personas = config_data.get('personas')
+        if not isinstance(personas, dict):
+            # Depending on strictness, this could be a warning or an error.
+            # For now, let's assume it's critical if LEE needs it for persona-based evolution.
+            msg = "Config Error: 'personas' section is missing or not a dictionary."
+            self.logger.critical(msg)
+            raise ValueError(msg)
+
+        # Validate performance_log_path (already set as self.performance_log_path, but check from config if it's there)
+        perf_log_path_conf = config_data.get('performance_log_path')
+        if perf_log_path_conf is not None and (not isinstance(perf_log_path_conf, str) or not perf_log_path_conf.strip()):
+            msg = f"Config Error: 'performance_log_path' must be a non-empty string if provided. Found: {perf_log_path_conf}"
+            self.logger.critical(msg)
+            raise ValueError(msg)
+        # self.performance_log_path is set from constructor or config, ensure it's valid before use is good,
+        # but its existence as a string is implicitly handled by its usage.
+
+        # Validate RNG Paths
+        # rng_state_load_path is handled by self.load_rng_state if it exists.
+        # We only need to validate its type if present, and its existence.
+        rng_load_path = config_data.get('rng_state_load_path')
+        if rng_load_path is not None: # If key exists
+            if not isinstance(rng_load_path, str) or not rng_load_path.strip():
+                msg = f"Config Error: 'rng_state_load_path' must be a non-empty string if provided. Found: {rng_load_path}"
+                self.logger.critical(msg)
+                raise ValueError(msg)
+            if not os.path.exists(rng_load_path): # This check is also in load_rng_state, but good for early validation
+                msg = f"Config Error: 'rng_state_load_path' file not found at {rng_load_path}"
+                self.logger.critical(msg)
+                raise FileNotFoundError(msg)
+        
+        rng_save_path = config_data.get('rng_state_save_path')
+        if rng_save_path is not None: # If key exists
+            if not isinstance(rng_save_path, str) or not rng_save_path.strip():
+                msg = f"Config Error: 'rng_state_save_path' must be a non-empty string if provided. Found: {rng_save_path}"
+                self.logger.critical(msg)
+                raise ValueError(msg)
+            save_dir = os.path.dirname(rng_save_path) or '.'
+            if not os.access(save_dir, os.W_OK):
+                msg = f"Config Error: Directory for 'rng_state_save_path' ({save_dir}) is not writable."
+                self.logger.critical(msg)
+                raise IOError(msg)
+
+        # Validate priming_generations
+        priming_gens = config_data.get('priming_generations')
+        if priming_gens is not None and (not isinstance(priming_gens, int) or priming_gens < 0):
+            msg = f"Config Error: 'priming_generations' must be an integer >= 0. Found: {priming_gens}"
+            self.logger.critical(msg)
+            raise ValueError(msg)
+            
+        self.logger.info("Configuration validation completed successfully.")
 
     def set_active_persona(self, persona_name: str) -> None:
         if persona_name in self.available_personas:
@@ -606,24 +785,39 @@ class SystemOrchestrator:
         return final_params
 
     def save_rng_state(self, filepath: str) -> None:
-        """Saves the current RNG state to the specified filepath."""
+        """
+        Saves the current state of the `random` module's RNG to the specified
+        filepath using `pickle`. Logs errors if saving fails.
+        """
         if not filepath:
             self.logger.warning("RNG state save path not provided. Skipping save.")
             return
         try:
-            rng_state = random.getstate()
+            rng_states = {
+                'python_random': random.getstate(),
+                'numpy_random': np.random.get_state()
+            }
             with open(filepath, 'wb') as f:
-                pickle.dump(rng_state, f)
-            self.logger.info(f"RNG state saved to {filepath}")
+                pickle.dump(rng_states, f)
+            
+            if shutdown_mode:
+                self.logger.info(f"Saving RNG state to {filepath} during shutdown.")
+            else:
+                self.logger.info(f"Dictionary of RNG states (Python, NumPy) saved to {filepath}")
         except IOError as e:
-            self.logger.error(f"Error saving RNG state to {filepath}: {e}")
+            self.logger.error(f"Error saving RNG states to {filepath}: {e}")
         except pickle.PicklingError as e:
-            self.logger.error(f"Error pickling RNG state for saving to {filepath}: {e}")
+            self.logger.error(f"Error pickling RNG states for saving to {filepath}: {e}")
         except Exception as e:
             self.logger.error(f"An unexpected error occurred while saving RNG state to {filepath}: {e}")
 
     def load_rng_state(self, filepath: str) -> None:
-        """Loads the RNG state from the specified filepath."""
+        """
+        Loads the RNG state from the specified filepath using `pickle` and
+        applies it to the `random` module. Handles `FileNotFoundError` and
+        `pickle.UnpicklingError` gracefully by logging warnings/errors and
+        continuing execution.
+        """
         if not filepath:
             self.logger.warning("RNG state load path not provided. Skipping load.")
             return
@@ -632,9 +826,29 @@ class SystemOrchestrator:
             return
         try:
             with open(filepath, 'rb') as f:
-                rng_state = pickle.load(f)
-            random.setstate(rng_state)
-            self.logger.info(f"RNG state loaded from {filepath}")
+                loaded_data = pickle.load(f)
+            
+            if isinstance(loaded_data, dict):
+                # New dictionary format
+                if 'python_random' in loaded_data:
+                    random.setstate(loaded_data['python_random'])
+                    self.logger.info("Python's random state loaded from dictionary.")
+                else:
+                    self.logger.warning("No 'python_random' state found in loaded RNG data dictionary.")
+                
+                if 'numpy_random' in loaded_data:
+                    np.random.set_state(loaded_data['numpy_random'])
+                    self.logger.info("NumPy's random state loaded from dictionary.")
+                else:
+                    self.logger.warning("No 'numpy_random' state found in loaded RNG data dictionary.")
+            else:
+                # Legacy format: assume it's just Python's random state
+                self.logger.warning("Loading legacy RNG state (assumed to be Python's random state only).")
+                random.setstate(loaded_data)
+                # NumPy's state will remain unchanged or as per its default initialization.
+                self.logger.info("Python's random state loaded from legacy format. NumPy state not affected by this legacy file.")
+
+            self.logger.info(f"RNG state loading process completed for {filepath}")
         except IOError as e:
             self.logger.error(f"Error loading RNG state from {filepath}: {e}")
         except pickle.UnpicklingError as e:

@@ -10,7 +10,6 @@ from utils.hardware_monitor import get_cpu_load
 from src.nanostrat import run_nanostrat_test
 from src.fitness import evaluate_dna_fitness
 from src.experimental_pool import ExperimentalPoolManager
-# from src.system_orchestrator import SystemOrchestrator  # Removed to avoid circular import
 from settings import LEE_SETTINGS, EPM_SETTINGS, SO_SETTINGS, FERAL_CALIBRATOR_SETTINGS, LOGGING_SETTINGS, GENERAL_SETTINGS
 from src.data_logger import log_event, logger_instance
 from typing import List, Optional, Dict, Any, Tuple
@@ -22,13 +21,8 @@ import csv
 import json
 from datetime import datetime
 
-# Global state for MVP feedback
-cycle_counter = 0
-mutation_strength = LEE_SETTINGS['MUTATION_STRENGTH']
-
-# Instantiate managers
-epm = ExperimentalPoolManager()
-# so = SystemOrchestrator()  # Removed to avoid circular import
+if TYPE_CHECKING:
+    from src.system_orchestrator import SystemOrchestrator # Keep for type hinting in LEE class
 
 # Defensive settings check utility
 def check_settings_dict(settings_dict: Dict[str, Any], required_keys: List[str], dict_name: str) -> None:
@@ -39,9 +33,10 @@ def check_settings_dict(settings_dict: Dict[str, Any], required_keys: List[str],
         raise RuntimeError(msg)
 
 # Defensive checks for all settings dicts
-check_settings_dict(LEE_SETTINGS, ['MUTATION_STRENGTH', 'CYCLE_GENERATE_INTERVAL', 'DUMMY_MARKET_DATA_SIZE', 'MVL_BUFFER_SIZE'], 'LEE_SETTINGS')
+check_settings_dict(LEE_SETTINGS, ['MUTATION_STRENGTH', 'CYCLE_GENERATE_INTERVAL', 'DUMMY_MARKET_DATA_SIZE', 'MVL_BUFFER_SIZE', 'GENERATION_TRIGGER_SENSITIVITY'], 'LEE_SETTINGS')
 check_settings_dict(EPM_SETTINGS, ['MAX_POOL_SIZE', 'MAX_POOL_LIFE', 'MIN_PERFORMANCE_THRESHOLD', 'MIN_POOL_SIZE', 'GRADUATION_MIN_SHARPE_POOL', 'GRADUATION_MIN_PNL_POOL', 'GRADUATION_MIN_TICKS_IN_POOL', 'GRADUATION_MIN_ACTIVATIONS_POOL', 'GRADUATION_EPSILON'], 'EPM_SETTINGS')
 check_settings_dict(SO_SETTINGS, ['MAX_CANDIDATE_SLOTS', 'CANDIDATE_VIRTUAL_CAPITAL', 'CANDIDATE_MIN_SHARPE', 'CANDIDATE_MIN_PNL', 'CANDIDATE_MIN_TICKS', 'CANDIDATE_MIN_ACTIVATIONS', 'CANDIDATE_EPSILON', 'CANDIDATE_MAX_LIFE', 'CANDIDATE_SHARPE_DROP_TRIGGER', 'AB_TEST_TICKS', 'FITNESS_WEIGHTS', 'AB_SHARPE_THRESHOLD', 'AB_PNL_THRESHOLD', 'INFLUENCE_MULTIPLIER_MAX', 'INFLUENCE_MULTIPLIER_MIN', 'INFLUENCE_MULTIPLIER_STEP_UP', 'INFLUENCE_MULTIPLIER_STEP_DOWN', 'INFLUENCE_SCORE_HIGH_PCT', 'INFLUENCE_SCORE_LOW_PCT', 'COOLDOWN_TICKS_AFTER_TWEAK', 'KPI_DASHBOARD_INTERVAL'], 'SO_SETTINGS')
+
 
 def get_dummy_market_data(n: int = LEE_SETTINGS['DUMMY_MARKET_DATA_SIZE']) -> List[Dict[str, float]]:
     """
@@ -59,32 +54,38 @@ def get_dummy_market_data(n: int = LEE_SETTINGS['DUMMY_MARKET_DATA_SIZE']) -> Li
         data.append({'price': price, 'RSI_14': rsi})
     return data
 
-def should_generate_new_dna() -> bool:
+def should_generate_new_dna(current_cycle_count: int, epm_instance: ExperimentalPoolManager) -> bool:
     """
     Determine if a new DNA should be generated this cycle.
+    Uses local EPM instance and passed-in cycle count.
+    Sensitivity defaults to LEE_SETTINGS.
     Returns:
         bool: True if new DNA should be generated.
     """
-    global cycle_counter
-    # Assuming 'so' is an instance of SystemOrchestrator, which might not be fully typed here due to potential circular deps
-    # For now, we'll assume it has these attributes.
-    sensitivity: int = so.meta_param_monitor.generation_trigger_sensitivity if so.meta_param_monitor.enabled else LEE_SETTINGS['GENERATION_TRIGGER_SENSITIVITY']
-    return cycle_counter % sensitivity == 0 or epm.get_pool_size() < EPM_SETTINGS['MIN_POOL_SIZE']
+    sensitivity: int = LEE_SETTINGS['GENERATION_TRIGGER_SENSITIVITY']
+    return current_cycle_count % sensitivity == 0 or epm_instance.get_pool_size() < EPM_SETTINGS['MIN_POOL_SIZE']
 
-def run_mvl_cycle() -> None:
+def run_mvl_cycle(current_cycle_count: int, current_mutation_strength: float, epm_instance: ExperimentalPoolManager) -> float:
     """
     Run a single MVL (main value loop) cycle: generate/test DNA, update pool, and log results.
     Adds error handling for external calls and calculations.
     Logs DNA_GENERATED_MVL event after each cycle.
+    Args:
+        current_cycle_count (int): The current cycle number.
+        current_mutation_strength (float): The current mutation strength.
+        epm_instance (ExperimentalPoolManager): The EPM instance.
+    Returns:
+        float: Potentially modified mutation strength.
     """
-    global cycle_counter, mutation_strength
     logger = logging.getLogger(__name__) # Local logger instance
-    cycle_counter += 1
-    logger.info(f"=== MVL Cycle {cycle_counter} ===")
-    if should_generate_new_dna():
+    logger.info(f"=== MVL Cycle {current_cycle_count} ===")
+    
+    new_mutation_strength = current_mutation_strength
+
+    if should_generate_new_dna(current_cycle_count, epm_instance):
         logger.info("Trigger: Generating new candidate DNA.")
         seed: LogicDNA = LogicDNA.seed_rsi_buy()
-        candidate: LogicDNA = mutate_dna(seed, mutation_strength)
+        candidate: LogicDNA = mutate_dna(seed, new_mutation_strength)
         cpu_load: float
         try:
             cpu_load = get_cpu_load()
@@ -123,10 +124,10 @@ def run_mvl_cycle() -> None:
         ) # type: ignore
         # Optional: MVP feedback tweak
         if fitness == 'discard_performance':
-            mutation_strength = max(0.05, mutation_strength * 0.95)
+            new_mutation_strength = max(0.05, new_mutation_strength * 0.95)
         elif fitness == 'survived_mvl':
-            mutation_strength = min(0.2, mutation_strength * 1.05)
-            epm.add_dna_to_pool(candidate) # type: ignore
+            new_mutation_strength = min(0.2, new_mutation_strength * 1.05)
+            epm_instance.add_dna_to_pool(candidate) # type: ignore
             # Structured logging for EPM_DNA_ADDED
             log_event( # type: ignore
                 'EPM_DNA_ADDED', # type: ignore
@@ -137,6 +138,7 @@ def run_mvl_cycle() -> None:
             ) # type: ignore
     else:
         logger.info("No new DNA generated this cycle.")
+    return new_mutation_strength
 
 # --- RUN_CONFIGURATION_SNAPSHOT ---
 def get_hardware_status() -> Dict[str, Any]:
@@ -166,99 +168,145 @@ def log_run_configuration_snapshot() -> None:
         'FERAL_CALIBRATOR_SETTINGS': dict(FERAL_CALIBRATOR_SETTINGS) if 'FERAL_CALIBRATOR_SETTINGS' in globals() else {}, # type: ignore
         'LOGGING_SETTINGS': dict(LOGGING_SETTINGS), # type: ignore
         'GENERAL_SETTINGS': dict(GENERAL_SETTINGS), # type: ignore
-        'META_PARAM_SETTINGS': {k: v for k, v in globals().items() if k.startswith('META_PARAM_') or k == 'ENABLE_META_SELF_TUNING'}, # type: ignore
+        # 'META_PARAM_SETTINGS': {k: v for k, v in globals().items() if k.startswith('META_PARAM_') or k == 'ENABLE_META_SELF_TUNING'}, # type: ignore # Cannot access globals like this anymore
         'hardware_status': get_hardware_status(), # type: ignore
         'log_file_accessible': check_log_file_accessible(log_file), # type: ignore
         'datalogger_initialized': isinstance(logger_instance, object), # type: ignore
     }) # type: ignore
 
 # --- RUN_COMPLETED_SUMMARY ---
-def log_run_completed_summary(start_time: float, dnas_generated: int, candidates_graduated: int, ab_tests: int, meta_param_events: int, final_pnl: float, critical_errors: List[str]) -> None:
+def log_run_completed_summary(start_time: float, dnas_generated: int, candidates_graduated_local: int, critical_errors: List[str]) -> None:
     end_time: float = time.time()
     log_event('RUN_COMPLETED_SUMMARY', { # type: ignore
         'timestamp_end_run': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(end_time)), # type: ignore
         'run_duration_sec': end_time - start_time, # type: ignore
-        'total_dnas_generated': dnas_generated, # type: ignore
-        'total_candidates_graduated': candidates_graduated, # type: ignore
-        'total_ab_tests': ab_tests, # type: ignore
-        'total_meta_param_self_adjusted': meta_param_events, # type: ignore
-        'final_portfolio_pnl': final_pnl, # type: ignore
+        'total_dnas_generated_mvl': dnas_generated, # type: ignore # Renamed for clarity
+        'total_candidates_graduated_epm': candidates_graduated_local, # type: ignore # Renamed for clarity
+        # Removed SO-related stats for script execution
+        # 'total_ab_tests': ab_tests, 
+        # 'total_meta_param_self_adjusted': meta_param_events,
+        # 'final_portfolio_pnl': final_pnl,
         'critical_errors_encountered': critical_errors, # type: ignore
     }) # type: ignore
 
-# --- Signal handler for graceful shutdown ---
-shutdown_requested: bool = False
-def handle_sigint(sig: int, frame: Any) -> None:
-    global shutdown_requested
-    shutdown_requested = True
-    print("\nSIGINT received. Preparing graceful shutdown...")
 
-signal.signal(signal.SIGINT, handle_sigint)
+def run_lee_simulation():
+    """
+    Main simulation loop for LEE when run as a standalone script.
+    Manages local state, EPM, and the MVL cycle.
+    """
+    from src.utils.logging_utils import setup_global_logging # Added
+    setup_global_logging() # Added
 
-# --- Main logic ---
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    # The basicConfig below is now handled by setup_global_logging, 
+    # but getLogger will work as expected, inheriting root config.
+    logger = logging.getLogger(__name__) 
+
+    # --- Local state variables ---
+    cycle_counter_local: int = 0
+    mutation_strength_local: float = LEE_SETTINGS['MUTATION_STRENGTH']
+    epm_instance: ExperimentalPoolManager = ExperimentalPoolManager()
+    
+    # Using a list for shutdown_requested to allow modification in nested function
+    shutdown_flag: List[bool] = [False]
+
+    prev_price_local: float = 100.0
+    market_data_buffer_local: List[Dict[str, float]] = []
+    
+    dnas_generated_local: int = 0
+    candidates_graduated_local: int = 0 # Tracks EPM graduations for script context
+    # ab_tests_local: int = 0 # SO interaction removed
+    # meta_param_events_local: int = 0 # SO interaction removed
+    critical_errors_local: List[str] = []
+    # final_pnl_local: float = 0.0 # SO interaction removed
+
+    BUFFER_SIZE: int = LEE_SETTINGS['MVL_BUFFER_SIZE']
+
+    def handle_sigint(sig: int, frame: Any) -> None:
+        shutdown_flag[0] = True
+        print("\nSIGINT received by LEE simulation. Preparing graceful shutdown...")
+
+    signal.signal(signal.SIGINT, handle_sigint)
+    
     log_run_configuration_snapshot()
-    start_time = time.time()
-    dnas_generated = 0
-    candidates_graduated = 0
-    ab_tests = 0
-    meta_param_events = 0
-    critical_errors = []
-    prev_price = 100.0
-    market_data_buffer = []
-    BUFFER_SIZE = LEE_SETTINGS['MVL_BUFFER_SIZE']
+    start_time_local = time.time()
+
     try:
-        for i in range(40):
-            if shutdown_requested:
+        for i in range(40): # Example number of iterations
+            if shutdown_flag[0]:
+                logger.info("Shutdown requested, exiting loop.")
                 break
-            run_mvl_cycle()
-            dnas_generated += 1  # Approximate, refine if needed
-            price = prev_price + random.uniform(-1, 1)
+            
+            cycle_counter_local +=1 # Increment cycle counter for run_mvl_cycle
+            mutation_strength_local = run_mvl_cycle(cycle_counter_local, mutation_strength_local, epm_instance)
+            
+            # Only count if a new DNA was actually generated in the MVL cycle
+            # This logic is implicitly handled by should_generate_new_dna within run_mvl_cycle.
+            # For simplicity, we can assume if run_mvl_cycle is called, and it decided to generate, it did.
+            # A more precise count would require run_mvl_cycle to return if DNA was generated.
+            if should_generate_new_dna(cycle_counter_local, epm_instance) : # Approximate count
+                 dnas_generated_local +=1
+
+
+            price = prev_price_local + random.uniform(-1, 1)
             rsi = random.uniform(10, 90)
-            market_tick = {'price': price, 'price_prev': prev_price, 'RSI_14': rsi}
-            epm.evaluate_pool_tick(market_tick)
-            prev_price = price
-            market_data_buffer.append({'price': price, 'price_prev': prev_price, 'RSI_14': rsi})
-            if len(market_data_buffer) > BUFFER_SIZE:
-                market_data_buffer.pop(0)
-            if i % 5 == 0:
-                epm.prune_pool()
-            graduates = epm.check_for_graduates()
-            for idx, entry in reversed(graduates):
-                grad_entry = epm.pop_graduate(idx)
-                so.promote_to_candidate_slot(grad_entry)
-                candidates_graduated += 1
-                log_event(
-                    'CANDIDATE_GRADUATED',
-                    {
-                        'dna_id': grad_entry.dna.id,
-                        'epm_performance_summary': {
-                            'rolling_pnl_pool': grad_entry.rolling_pnl_pool,
-                            'activation_count_pool': grad_entry.activation_count_pool,
-                            'ticks_in_pool': grad_entry.ticks_in_pool,
-                        },
-                        'candidate_slot_id_assigned': grad_entry.dna.id,
-                    }
-                )
-            so.evaluate_candidates_per_tick(market_tick, recent_market_data=market_data_buffer)
-            logging.info(f"SO State: NumCandidates={len(so.candidate_slots)} | Candidates={[str(slot.dna) for slot in so.candidate_slots]}")
-            boost = so.get_candidate_confidence_boost('buy')
-            logging.info(f"SO Confidence Boost (buy): {boost}")
-            logging.info(f"EPM State: PoolSize={epm.get_pool_size()} | AvgPoolPnL={epm.get_average_pool_pnl():.2f}")
-            so.log_portfolio_metrics()
-        # Gather run summary stats
-        ab_tests = getattr(so, 'ab_tests_completed', 0)
-        meta_param_events = getattr(so.meta_param_monitor, 'window_counter', 0)
-        final_pnl = sum(slot.pnl_candidate for slot in so.candidate_slots)
-        if hasattr(so, 'critical_errors'):
-            critical_errors = so.critical_errors[-5:]
+            market_tick: Dict[str, float] = {'price': price, 'price_prev': prev_price_local, 'RSI_14': rsi}
+            
+            epm_instance.evaluate_pool_tick(market_tick)
+            prev_price_local = price
+            
+            market_data_buffer_local.append({'price': price, 'price_prev': prev_price_local, 'RSI_14': rsi})
+            if len(market_data_buffer_local) > BUFFER_SIZE:
+                market_data_buffer_local.pop(0)
+            
+            if i % 5 == 0: # Periodically prune EPM
+                epm_instance.prune_pool()
+            
+            graduates = epm_instance.check_for_graduates()
+            for idx, entry in reversed(graduates): # Iterate reversed to pop correctly
+                grad_entry = epm_instance.pop_graduate(idx)
+                if grad_entry:
+                    candidates_graduated_local += 1
+                    logger.info(f"LEE Script: EPM Graduated DNA {grad_entry.dna.id}")
+                    # No so.promote_to_candidate_slot call here for standalone script
+
+            # Removed SO-related calls:
+            # so.evaluate_candidates_per_tick(...)
+            # logging.info(f"SO State: ...")
+            # boost = so.get_candidate_confidence_boost(...)
+            # so.log_portfolio_metrics()
+
+            logger.info(f"EPM State: PoolSize={epm_instance.get_pool_size()} | AvgPoolPnL={epm_instance.get_average_pool_pnl():.2f}")
+            time.sleep(0.1) # Simulate work
+
+        # Removed SO-related stat gathering:
+        # ab_tests_local = getattr(so, 'ab_tests_completed', 0)
+        # meta_param_events_local = getattr(so.meta_param_monitor, 'window_counter', 0)
+        # final_pnl_local = sum(slot.pnl_candidate for slot in so.candidate_slots)
+        # if hasattr(so, 'critical_errors'):
+        #     critical_errors_local = so.critical_errors[-5:]
+
     except Exception as e:
-        critical_errors.append(str(e))
-        log_event('CRITICAL_ERROR', {'exception': str(e)})
+        logger.error(f"Critical error in LEE simulation loop: {e}", exc_info=True)
+        critical_errors_local.append(str(e))
+        log_event('CRITICAL_ERROR', {'exception': str(e), 'context': 'lee_simulation_loop'})
     finally:
-        log_run_completed_summary(start_time, dnas_generated, candidates_graduated, ab_tests, meta_param_events, final_pnl, critical_errors)
-        print("Graceful shutdown complete. Run summary logged.")
+        log_run_completed_summary(
+            start_time_local, 
+            dnas_generated_local, 
+            candidates_graduated_local, 
+            # ab_tests_local, # Removed
+            # meta_param_events_local, # Removed
+            # final_pnl_local, # Removed
+            critical_errors_local
+        )
+        print("LEE standalone simulation graceful shutdown complete. Run summary logged.")
+
+
+# --- Main logic for script execution ---
+if __name__ == '__main__':
+    run_lee_simulation()
+
 
 class LEE:
     """

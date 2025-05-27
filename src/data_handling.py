@@ -1,6 +1,13 @@
 """
 Data handling module for Project Crypto Bot Peter.
-Handles market data loading and processing using Polars for efficient memory usage.
+
+This module provides utilities for loading, processing, and preparing market data.
+It includes functions for:
+- Loading OHLCV data from CSV files (using pandas).
+- Calculating various technical indicators (e.g., SMA, EMA, RSI, realized volatility).
+- Loading and transforming market data from Parquet files using Polars for
+  efficient memory usage and lazy evaluation (though currently, Polars usage
+  might be more experimental or for specific data sources).
 """
 
 import polars as pl

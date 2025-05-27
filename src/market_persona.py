@@ -1,3 +1,13 @@
+"""
+Market Persona for Project Crypto Bot Peter.
+
+This module defines the `MarketPersona` class, which represents different
+market condition biases or trading styles (e.g., 'Agile_HUNTER',
+'Steady_GUARDIAN'). Each persona has a specific fitness function, defined
+by a set of weights for various performance metrics and complexity penalties.
+This allows the evolutionary system to optimize LogicDNA instances for
+different market interpretations or objectives.
+"""
 class MarketPersona:
     """
     Represents a market persona with a specific fitness function for evaluating LogicDNA individuals.
