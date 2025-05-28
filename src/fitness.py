@@ -8,9 +8,17 @@ The fitness score helps determine which strategies are promising and should be
 further explored or promoted by the evolutionary algorithms.
 """
 import logging
+from typing import Dict, Any
 
-def evaluate_dna_fitness(nanostrat_results, cpu_load):
-    logger = logging.getLogger(__name__)
+# Attempt to import NanoStratResult, fallback to Dict[str, Any]
+try:
+    from src.nanostrat import NanoStratResult
+except ImportError:
+    NanoStratResult = Dict[str, Any] # type: ignore
+
+logger = logging.getLogger(__name__) # Moved to module level
+
+def evaluate_dna_fitness(nanostrat_results: NanoStratResult, cpu_load: float) -> str:
     if cpu_load > 85.0:
         logger.info(f"Fitness: Discarded due to high CPU load ({cpu_load:.2f}%)")
         return 'discard_hardware_limit'
