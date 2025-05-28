@@ -37,14 +37,26 @@ def setup_global_logging(
     enable_file_logging = log_to_file
     log_format = DEFAULT_LOG_FORMAT
 
+    logger = logging.getLogger(__name__) # Use a logger specific to this module
+
     if os.path.exists(config_path):
         try:
             parser.read(config_path)
             if parser.has_section('Logging'):
-                # Level
-                level_name = parser.get('Logging', 'level', fallback=None)
-                if level_name:
-                    log_level = getattr(logging, level_name.upper(), default_level)
+                level_name_from_config = parser.get('Logging', 'level', fallback=None)
+                if level_name_from_config:
+                    parsed_level_int = getattr(logging, level_name_from_config.upper(), None)
+                    if parsed_level_int is None:
+                        logger.warning(
+                            f"Invalid log level '{level_name_from_config}' found in {config_path}. "
+                            f"Falling back to default level '{logging.getLevelName(default_level)}'."
+                        )
+                        log_level = default_level  # Fallback
+                    else:
+                        log_level = parsed_level_int
+                else:
+                    # 'level' key missing in [Logging] section, use function default
+                    log_level = default_level 
                 
                 # File path
                 configured_log_file_path = parser.get('Logging', 'log_file_path', fallback=default_log_file_path)
@@ -59,13 +71,33 @@ def setup_global_logging(
                     
                 # Log format
                 log_format = parser.get('Logging', 'log_format', fallback=DEFAULT_LOG_FORMAT)
+            
+            else: # No [Logging] section
+                logger.info(
+                    f"Logging section not found in {config_path}. Using function defaults."
+                )
+                # log_level, configured_log_file_path, enable_file_logging, log_format
+                # will retain their initial values (function defaults).
 
         except configparser.Error as e:
-            logging.warning(f"Error reading logging configuration from {config_path}: {e}. Using defaults.")
+            logger.warning(f"Error reading logging configuration from {config_path}: {e}. Using function defaults.")
+            # Ensure all params are reset to function defaults in case of partial read before error
+            log_level = default_level
+            configured_log_file_path = default_log_file_path
+            enable_file_logging = log_to_file
+            log_format = DEFAULT_LOG_FORMAT
+            
         except Exception as e: # Catch any other unexpected errors during parsing
-            logging.error(f"Unexpected error processing logging config {config_path}: {e}. Using defaults.")
-    # else: # This was removed in the provided version, keeping it aligned
-    #     logging.info(f"Configuration file {config_path} not found. Using default logging settings.")
+            logger.error(f"Unexpected error processing logging config {config_path}: {e}. Using function defaults.")
+            log_level = default_level
+            configured_log_file_path = default_log_file_path
+            enable_file_logging = log_to_file
+            log_format = DEFAULT_LOG_FORMAT
+    else: # Config file does not exist
+        logger.info(f"Configuration file {config_path} not found. Using function defaults.")
+        # log_level, configured_log_file_path, enable_file_logging, log_format
+        # will retain their initial values (function defaults).
+
 
     # Determine which format string to use based on the effective log level
     chosen_format_string = DEBUG_LOG_FORMAT if log_level == logging.DEBUG else log_format
@@ -99,15 +131,17 @@ def setup_global_logging(
     logging.basicConfig(level=log_level, handlers=handlers, force=True) # force=True to reconfigure if already configured
     
     # Test message
-    # Using logging.getLogger() here to ensure it uses the newly configured root logger
-    final_logger = logging.getLogger(__name__) 
+    # Using the module-level logger instance defined at the top.
     file_logging_status = 'Disabled'
     if enable_file_logging:
         # Check if a FileHandler was successfully added to the root logger's handlers
-        if any(isinstance(h, logging.FileHandler) for h in logging.getLogger().handlers):
+        # This check is a bit indirect; the actual file_handler object from above is more direct.
+        if file_handler and any(h is file_handler for h in logging.getLogger().handlers):
             file_logging_status = f'Enabled to {configured_log_file_path}'
-        else:
+        elif file_handler: # File handler was created but perhaps not added to root (should not happen with current logic)
+            file_logging_status = f'Attempted for {configured_log_file_path} but check addition to root logger.'
+        else: # File handler creation failed (e.g. permission error)
             file_logging_status = 'Failed to enable'
 
 
-    final_logger.info(f"Global logging configured. Level: {logging.getLevelName(log_level)}. File logging: {file_logging_status}.")
+    logger.info(f"Global logging configured. Level: {logging.getLevelName(log_level)}. File logging: {file_logging_status}.")

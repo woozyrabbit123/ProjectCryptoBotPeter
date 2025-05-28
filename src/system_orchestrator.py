@@ -452,6 +452,12 @@ class SystemOrchestrator:
             RNG state files (often using pickle) should only be loaded from
             trusted sources, as loading a malicious pickle file can lead to
             arbitrary code execution.
+        - Advanced Consideration: If Project Crypto Bot Peter is ever adapted
+          for multi-process or heavily multi-threaded execution, the current
+          global RNG state restoration mechanism for `random` and `numpy.random`
+          may require careful review and potential modification (e.g., using
+          per-process/per-thread RNG instances) to ensure predictable behavior
+          across concurrent operations.
     """
     def __init__(self, config_file_path: Optional[str] = None, mode: str = 'FULL_V1_2', performance_log_path: str = 'performance_log_FULL_V1_2.csv'):
         self.logger: logging.Logger = logging.getLogger(__name__) # Ensure logger is initialized
