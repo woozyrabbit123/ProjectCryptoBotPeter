@@ -14,12 +14,13 @@ from settings import LEE_SETTINGS, EPM_SETTINGS, SO_SETTINGS, FERAL_CALIBRATOR_S
 from src.data_logger import log_event, logger_instance
 from typing import List, Optional, Dict, Any, Tuple
 from src.market_persona import MarketPersona
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional # Ensure Optional is imported
 import pandas as pd
 import numpy as np
 import csv
 import json
 from datetime import datetime
+from src.data_persistence import PerformanceLogDatabase # Added import
 
 if TYPE_CHECKING:
     from src.system_orchestrator import SystemOrchestrator # Keep for type hinting in LEE class
@@ -610,19 +611,53 @@ class LEE:
 
                 # CSV Log Writing Timing
                 log_write_start_time: float = time.time()
-                writer.writerow({
+                # Prepare data for CSV
+                timestamp_now_iso = datetime.now().isoformat()
+                csv_log_data = {
                     'dna_id': dna_id_str,
-                    'generation_born': getattr(dna_individual, 'generation_born', ''),
+                    'generation_born': getattr(dna_individual, 'generation_born', ''), # May be empty string
                     'current_generation_evaluated': current_generation,
                     'logic_dna_structure_representation': structure_repr_str,
-                    'performance_metrics': json.dumps(performance_metrics),
+                    'performance_metrics': json.dumps(performance_metrics), # JSON string for CSV
                     'fitness_score': current_fitness,
                     'active_persona_name': active_persona_name,
-                    'ces_vector_at_evaluation_time': json.dumps(ces_vector),
-                    'timestamp_of_evaluation': datetime.now().isoformat()
-                })
+                    'ces_vector_at_evaluation_time': json.dumps(ces_vector), # JSON string for CSV
+                    'timestamp_of_evaluation': timestamp_now_iso
+                }
+                writer.writerow(csv_log_data)
                 log_write_end_time: float = time.time()
-                self.logger.debug(f"Time taken for DNA {dna_id_str} performance log entry: {log_write_end_time - log_write_start_time:.3f} seconds")
+                self.logger.debug(f"Time taken for DNA {dna_id_str} CSV performance log entry: {log_write_end_time - log_write_start_time:.3f} seconds")
+
+                # --- Database Logging ---
+                db_log_start_time: float = time.time()
+                # Instantiate DB logger (can be done once per _evaluate_population call if preferred)
+                db_logger = PerformanceLogDatabase() 
+                
+                # Prepare data for DB (PerformanceLogDatabase.insert_log_entry expects dicts for JSON fields)
+                generation_born_val = getattr(dna_individual, 'generation_born', None)
+                if isinstance(generation_born_val, str) and not generation_born_val.strip():
+                    generation_born_val = None # Convert empty string to None for DB
+
+                log_data_for_db: Dict[str, Any] = {
+                    'dna_id': dna_id_str,
+                    'generation_born': generation_born_val,
+                    'current_generation_evaluated': current_generation,
+                    'logic_dna_structure_representation': structure_repr_str,
+                    'performance_metrics': performance_metrics, # Pass the original dict
+                    'fitness_score': current_fitness,
+                    'active_persona_name': active_persona_name,
+                    'ces_vector_at_evaluation_time': ces_vector, # Pass the original dict
+                    'timestamp_of_evaluation': timestamp_now_iso
+                    # log_source_file will be added by insert_log_entry method call
+                }
+                
+                if db_logger.insert_log_entry(log_data_for_db, source_file=performance_log_path):
+                    self.logger.debug(f"DNA {dna_id_str} performance log also written to SQLite database.")
+                else:
+                    self.logger.warning(f"Failed to write DNA {dna_id_str} performance log to SQLite database.")
+                db_log_end_time: float = time.time()
+                self.logger.debug(f"Time taken for DNA {dna_id_str} SQLite log entry: {db_log_end_time - db_log_start_time:.3f} seconds")
+                # --- End of Database Logging ---
 
         overall_end_time: float = time.time()
         self.logger.info(f"Total time taken for _evaluate_population: {overall_end_time - overall_start_time:.3f} seconds")

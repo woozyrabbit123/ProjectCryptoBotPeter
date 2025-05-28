@@ -7,6 +7,7 @@ import numpy as np
 import re # Added for regex
 from collections import Counter # Added for frequency counting
 from typing import Optional, List, Dict, Any, Tuple
+import configparser # Added for config.ini handling
 
 # Attempt to import setup_global_logging, handle if not found for standalone execution
 try:
@@ -21,89 +22,14 @@ except ImportError:
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
+# Import refactored utility functions
+from src.utils.performance_metrics_utils import (
+    calculate_sharpe_ratio,
+    calculate_max_drawdown,
+    calculate_trade_stats
+)
+
 logger: logging.Logger = logging.getLogger(__name__)
-
-# --- Metric Calculation Functions ---
-
-def calculate_sharpe_ratio(equity_curve: List[float], trading_days_per_year: int = 252) -> float:
-    """Calculates Sharpe ratio from an equity curve."""
-    if not equity_curve or len(equity_curve) < 2:
-        return np.nan
-    
-    equity_array = np.array(equity_curve, dtype=float)
-    returns = np.diff(equity_array) / equity_array[:-1]
-    returns = returns[np.isfinite(returns)] 
-
-    if len(returns) < 2: 
-        return np.nan
-
-    mean_return = np.mean(returns)
-    std_dev_returns = np.std(returns)
-
-    if std_dev_returns == 0:
-        return np.nan 
-
-    sharpe = (mean_return / std_dev_returns) * np.sqrt(trading_days_per_year)
-    return float(sharpe)
-
-
-def calculate_max_drawdown(equity_curve: List[float]) -> float:
-    """Calculates the maximum drawdown from an equity curve."""
-    if not equity_curve:
-        return np.nan
-    
-    equity_array = np.array(equity_curve, dtype=float)
-    peak = -np.inf
-    max_dd = 0.0
-
-    for equity_value in equity_array:
-        if equity_value > peak:
-            peak = equity_value
-        if peak > 0: 
-            drawdown = (peak - equity_value) / peak
-            if drawdown > max_dd:
-                max_dd = drawdown
-    return float(max_dd * 100) # Return as percentage
-
-
-def calculate_trade_stats(trade_log: List[Dict[str, Any]]) -> Dict[str, float]:
-    """
-    Calculates winning trade percentage and average P/L per unit.
-    Assumes trades are pairs of 'BUY' and subsequent 'SELL'.
-    """
-    if not trade_log:
-        return {'winning_trade_percentage': np.nan, 'average_trade_pl': np.nan, 'total_trades': 0}
-
-    trades_completed: List[Dict[str, float]] = []
-    active_buy: Optional[Dict[str, Any]] = None
-
-    for trade_action in trade_log:
-        action_type = trade_action.get('type')
-        price = trade_action.get('price')
-
-        if price is None: 
-            logger.debug(f"Skipping trade action due to missing price: {trade_action}")
-            continue
-
-        if action_type == 'BUY':
-            active_buy = trade_action
-        elif action_type == 'SELL' and active_buy:
-            buy_price = active_buy.get('price')
-            if buy_price is not None: 
-                profit_loss = price - buy_price 
-                trades_completed.append({'pnl': profit_loss, 'buy_price': buy_price, 'sell_price': price})
-            active_buy = None 
-
-    if not trades_completed:
-        return {'winning_trade_percentage': np.nan, 'average_trade_pl': np.nan, 'total_trades': 0}
-
-    winning_trades = sum(1 for trade in trades_completed if trade['pnl'] > 0)
-    total_trades = len(trades_completed)
-    
-    winning_percentage = (winning_trades / total_trades) * 100 if total_trades > 0 else np.nan
-    average_pl = sum(trade['pnl'] for trade in trades_completed) / total_trades if total_trades > 0 else np.nan
-    
-    return {'winning_trade_percentage': float(winning_percentage), 'average_trade_pl': float(average_pl), 'total_trades': total_trades}
 
 # --- Motif Analysis Function ---
 def analyze_motif_usage(df: pd.DataFrame) -> str:
@@ -113,6 +39,36 @@ def analyze_motif_usage(df: pd.DataFrame) -> str:
     Returns a Markdown formatted string of the analysis.
     """
     motif_lines: List[str] = ["\n## Motif Usage Analysis"]
+
+    # --- Motif Regex Configuration ---
+    default_motif_regex: str = r"Indicator_([A-Z0-9]+)_(\d+)(?:_Used)?"
+    motif_regex_to_use: str = default_motif_regex
+
+    config = configparser.ConfigParser()
+    # Path to config.ini assumes script is in 'scripts/' and config.ini is in project root.
+    config_path = os.path.join(os.path.dirname(__file__), '..', 'config.ini')
+
+    if os.path.exists(config_path):
+        config.read(config_path)
+        try:
+            configured_regex = config.get('MotifAnalysis', 'motif_regex_pattern', fallback=default_motif_regex)
+            if configured_regex and configured_regex.strip(): # Ensure not empty or just whitespace
+                motif_regex_to_use = configured_regex
+                if motif_regex_to_use == default_motif_regex:
+                    logger.info(f"Motif Analysis: Using default regex pattern (also found in config.ini or fallback used): {motif_regex_to_use}")
+                else:
+                    logger.info(f"Motif Analysis: Using regex pattern from config.ini: {motif_regex_to_use}")
+            else: # Empty value in config
+                logger.warning(f"Motif Analysis: 'motif_regex_pattern' in config.ini [MotifAnalysis] is empty. Using default: {default_motif_regex}")
+                motif_regex_to_use = default_motif_regex
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            logger.warning(f"Motif Analysis: '[MotifAnalysis]' section or 'motif_regex_pattern' key not found in {config_path}. Using default regex: {default_motif_regex}")
+            motif_regex_to_use = default_motif_regex
+    else:
+        logger.warning(f"Motif Analysis: config.ini not found at {config_path}. Using default regex: {default_motif_regex}")
+    
+    logger.debug(f"Final regex pattern for motif analysis: {motif_regex_to_use}")
+    # --- End of Motif Regex Configuration ---
 
     if 'logic_dna_structure_representation' not in df.columns:
         motif_lines.append("\n*Note: `logic_dna_structure_representation` column not found. Skipping motif analysis.*")
@@ -131,7 +87,7 @@ def analyze_motif_usage(df: pd.DataFrame) -> str:
              motif_lines.append("\n*Note: No valid numeric fitness scores available for overall average fitness.*")
 
 
-    motif_pattern = re.compile(r"Indicator_([A-Z0-9]+)_(\d+)(?:_Used)?")
+    compiled_motif_pattern = re.compile(motif_regex_to_use)
     motif_counts: Counter = Counter()
 
     for structure in df['logic_dna_structure_representation'].dropna():
@@ -369,5 +325,124 @@ def main() -> None:
     for line in report_markdown_lines: logger.info(line)
     logger.info("\n--- End of Report ---")
 
+    # --- HTML Report Generation ---
+    logger.info("Generating HTML performance dashboard...")
+    # Ensure reports_dir_path is defined in main or passed correctly
+    # For this diff, assuming reports_dir_path is "reports" and created in main
+    html_report_path = os.path.join("reports", "latest_performance_dashboard.html")
+    generate_html_report(summary_stats, performance_df.copy(), html_report_path)
+    # --- End of HTML Report Generation ---
+
 if __name__ == "__main__":
     main()
+
+
+# --- HTML Report Generation Function ---
+def generate_html_report(stats: Dict[str, Any], performance_df: pd.DataFrame, html_file_path: str) -> None:
+    """
+    Generates a simple HTML report with summary statistics and a placeholder for an equity curve chart.
+
+    Args:
+        stats (Dict[str, Any]): Dictionary of overall summary statistics.
+        performance_df (pd.DataFrame): The main DataFrame to extract a sample equity curve.
+        html_file_path (str): Path to save the HTML report.
+    """
+    logger.info(f"Preparing HTML report content for: {html_file_path}")
+
+    # Extract a sample equity curve
+    sample_equity_curve: List[float] = [10000, 10100, 10050, 10200] # Default placeholder
+    found_curve = False
+    if 'performance_metrics' in performance_df.columns:
+        # Iterate a few times to find a curve, not necessarily all rows for performance.
+        for _, row_metrics_json_str in performance_df['performance_metrics'].dropna().head(10).items(): 
+            if isinstance(row_metrics_json_str, str):
+                try:
+                    perf_metrics_dict = json.loads(row_metrics_json_str)
+                    equity_curve_candidate = perf_metrics_dict.get('equity_curve')
+                    if isinstance(equity_curve_candidate, list) and equity_curve_candidate:
+                        sample_equity_curve = equity_curve_candidate
+                        found_curve = True
+                        logger.debug(f"Found an equity curve for HTML report with {len(sample_equity_curve)} points.")
+                        break # Use the first valid one found
+                except json.JSONDecodeError:
+                    logger.debug(f"Could not parse performance_metrics JSON for HTML equity curve: {row_metrics_json_str[:100]}...")
+            if found_curve:
+                break
+        if not found_curve:
+            logger.warning("No valid equity curve found in the first 10 performance_metrics entries. Using default placeholder for HTML report.")
+    else:
+        logger.warning("'performance_metrics' column not found. Using default placeholder equity curve for HTML report.")
+
+
+    # Build HTML content
+    # Using a more robust way to format floats, handling potential 'N/A' if stats keys are missing
+    def format_stat(value: Any, precision: int = 4, is_percent: bool = False) -> str:
+        if isinstance(value, (int, float)) and not np.isnan(value):
+            return f"{value:.{precision}f}{' %' if is_percent else ''}"
+        return "N/A"
+
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Performance Dashboard</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }}
+        .container {{ background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }}
+        h1 {{ color: #333; text-align: center; }}
+        table {{ width: 100%; margin-top: 20px; border-collapse: collapse; }}
+        th, td {{ text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }}
+        th {{ background-color: #e9e9e9; }}
+        .chart-container {{ width:90%; max-width:700px; height:400px; border:1px solid #ccc; margin-top:30px; margin-left:auto; margin-right:auto; background-color: #fff; padding:10px; border-radius: 4px;}}
+        .placeholder-text {{ text-align:center; padding-top:150px; color: #888; font-size: 1.2em; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Performance Dashboard</h1>
+        
+        <h2>Overall Summary Statistics</h2>
+        <table>
+            <tr><th>Metric</th><th>Value</th></tr>
+            <tr><td>Highest Fitness Achieved</td><td>{format_stat(stats.get('highest_fitness'))}</td></tr>
+            <tr><td>Overall Sharpe Ratio (Avg)</td><td>{format_stat(stats.get('average_sharpe_ratio'))}</td></tr>
+            <tr><td>Maximum Drawdown (Avg)</td><td>{format_stat(stats.get('average_max_drawdown'), 2, True)}</td></tr>
+            <tr><td>Winning Trade Percentage (Avg)</td><td>{format_stat(stats.get('average_winning_trade_percentage'), 2, True)}</td></tr>
+            <tr><td>Average Trade Profit/Loss (Avg)</td><td>{format_stat(stats.get('average_trade_pl_overall'))}</td></tr>
+            <tr><td>Total Unique DNA Structures</td><td>{stats.get('total_unique_dna_structures', 'N/A')}</td></tr>
+            <tr><td>DNAs with Trades Evaluated</td><td>{stats.get('dna_with_trades_count', 'N/A')}</td></tr>
+        </table>
+
+        <h2>Sample Equity Curve Trend</h2>
+        <div id="equityTrendChartContainer" class="chart-container">
+            <div id="equityTrendChart" style="width:100%; height:100%;">
+                 <p class="placeholder-text">Equity Trend Chart Placeholder</p>
+            </div>
+        </div>
+        <!-- Placeholder for Chart.js or other charting library to render equityData -->
+        
+    </div>
+    <script>
+        const equityData = {json.dumps(sample_equity_curve)};
+        // Example: To verify data is available in console:
+        // console.log(equityData); 
+        // A real implementation would use a charting library here to draw on the 'equityTrendChart' div.
+    </script>
+</body>
+</html>
+"""
+
+    try:
+        # Ensure the reports directory exists (main function already does this, but good practice here too)
+        reports_dir = os.path.dirname(html_file_path)
+        if reports_dir and not os.path.exists(reports_dir): # Check if reports_dir is not empty string
+            os.makedirs(reports_dir, exist_ok=True)
+            
+        with open(html_file_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        logger.info(f"HTML performance dashboard saved to: {html_file_path}")
+    except IOError as e:
+        logger.error(f"Error writing HTML report to {html_file_path}: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while generating the HTML report: {e}", exc_info=True)
