@@ -1,72 +1,36 @@
 # Project Crypto Bot Peter
 
-A resource-efficient cryptocurrency trading bot MVP designed to run on constrained hardware (AMD Ryzen 5 5600H, NVIDIA RTX 3050 4GB VRAM, ~5.86GB system RAM).
+## Overview
+Project Crypto Bot Peter is an experimental platform for developing and testing automated cryptocurrency trading strategies using evolutionary algorithms and machine learning techniques.
 
-## Project Structure
+## Core Components
+*   **`src/system_orchestrator.py`**: Central coordinator managing modules, configurations, strategy lifecycles, and overall system flow.
+*   **`src/lee.py` (Logic Evolution Engine)**: Evolves trading strategy logic (`LogicDNA`) through simulated evolutionary cycles.
+*   **`src/mle_engine.py` (Meta-Learning Engine)**: Analyzes performance logs to identify successful patterns and provide feedback to the evolution process.
+*   **`src/logic_dna.py`**: Defines the structure and representation of trading strategies (decision trees/rules).
+*   **`src/ces_module.py` (Contextual Environment Scorer)**: Assesses current market conditions (e.g., volatility, trend) to provide context.
+*   **`src/data_handling.py`**: Utilities for loading and processing market data.
+*   **`src/utils/logging_utils.py`**: Provides centralized configuration for application-wide logging.
 
-```
-project_crypto_bot_peter/
-├── data/                     # For Parquet files, shard logs, etc.
-├── models/                   # For ONNX, TensorRT plans
-├── src/
-│   ├── data_handling.py     # Market data loading and processing
-│   ├── feature_engineering.py # Technical indicators and features
-│   ├── model_inference.py   # PyTorch model and TensorRT inference
-│   ├── trading_logic.py     # Trading strategies
-│   ├── fsm_sentinel.py      # Resource management FSM
-│   ├── shard_logger.py      # Efficient binary logging
-│   └── bot_scheduler.py     # Execution scheduling
-├── tests/                    # Unit tests
-├── config/                   # Configuration files
-├── main.py                  # Main entry point
-└── requirements.txt         # Python dependencies
-```
+## Running the Bot
+The main entry point for running the system is `main_v1_1.py`.
 
-## Setup Instructions
-
-1. Create and activate a Python virtual environment:
-   ```bash
-   python -m venv .venv
-   # On Windows:
-   .venv\Scripts\activate
-   # On Unix/MacOS:
-   source .venv/bin/activate
-   ```
-
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. Install TensorRT:
-   - Download and install TensorRT from NVIDIA's website
-   - Follow NVIDIA's installation guide for your specific system
-   - Note: Direct pip installation might not be possible; manual installation may be required
-
-## Usage
-
-Run the bot in monitoring mode (L0):
+Example:
 ```bash
-python main.py --mode L0
+python main_v1_1.py --mode FULL_V1_2
 ```
+*   `--mode`: Specifies the operational mode of the bot (e.g., `FULL_V1_2` for full operation, `LEE_ONLY_V1_1` for testing LEE in isolation). Consult `main_v1_1.py` for all available modes.
 
-Run the bot in trading mode (L1):
-```bash
-python main.py --mode L1
+## Configuration
+The project uses two main configuration files:
+
+*   **`config.json`**: Used by `SystemOrchestrator` for core operational parameters, including strategy evolution settings, market persona definitions, paths for RNG state management, and parameters for various bot components.
+*   **`config.ini`**: Used by `src/utils/logging_utils.py` to configure application-wide logging behavior, such as log level, file output path, and log formats.
+
+## Reproducibility
+To ensure experiments can be reproduced, the system can save and load the state of its random number generators (RNGs). This is managed by `SystemOrchestrator`.
+
+*   **Configuration**: This feature is controlled by `rng_state_load_path` (to load a previously saved state at startup) and `rng_state_save_path` (to save the current state at exit or interruption) in the `config.json` file.
+*   **Coverage**: Both Python's built-in `random` module and `numpy.random` module states are managed.
+*   **Security Note**: Important: RNG state files are typically saved using `pickle`. Only load RNG state files from trusted sources, as malicious pickle files can lead to arbitrary code execution.
 ```
-
-## Development
-
-- Use Python 3.9 or higher
-- Follow PEP 8 style guide
-- Run tests with `pytest`
-- Format code with `black`
-- Type check with `mypy`
-
-## Notes
-
-- The bot is designed for resource efficiency
-- Uses Polars for efficient data handling
-- Implements a "Sleepy Sentinel" FSM for resource management
-- TensorRT for optimized model inference
-- Binary shard logging for efficient data storage 
