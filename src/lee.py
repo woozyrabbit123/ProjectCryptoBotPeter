@@ -571,6 +571,9 @@ class LEE:
         prep_end_time: float = time.time()
         self.logger.info(f"Time taken for data preparation: {prep_end_time - prep_start_time:.3f} seconds")
 
+        # Instantiate DB logger once before the loop
+        db_logger = PerformanceLogDatabase()
+
         # Prepare log file
         log_exists: bool = os.path.exists(performance_log_path)
         with open(performance_log_path, 'a', newline='', encoding='utf-8') as csvfile:
@@ -630,8 +633,7 @@ class LEE:
 
                 # --- Database Logging ---
                 db_log_start_time: float = time.time()
-                # Instantiate DB logger (can be done once per _evaluate_population call if preferred)
-                db_logger = PerformanceLogDatabase() 
+                # db_logger is now instantiated before the loop
                 
                 # Prepare data for DB (PerformanceLogDatabase.insert_log_entry expects dicts for JSON fields)
                 generation_born_val = getattr(dna_individual, 'generation_born', None)

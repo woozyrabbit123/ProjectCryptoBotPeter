@@ -387,6 +387,7 @@ def generate_html_report(stats: Dict[str, Any], performance_df: pd.DataFrame, ht
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Performance Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script> <!-- Added Chart.js CDN -->
     <style>
         body {{ font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }}
         .container {{ background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }}
@@ -416,18 +417,52 @@ def generate_html_report(stats: Dict[str, Any], performance_df: pd.DataFrame, ht
 
         <h2>Sample Equity Curve Trend</h2>
         <div id="equityTrendChartContainer" class="chart-container">
-            <div id="equityTrendChart" style="width:100%; height:100%;">
-                 <p class="placeholder-text">Equity Trend Chart Placeholder</p>
-            </div>
+            <canvas id="equityTrendChartCanvas" style="width:100%; height:100%;"></canvas> <!-- Changed div to canvas -->
         </div>
-        <!-- Placeholder for Chart.js or other charting library to render equityData -->
         
     </div>
     <script>
         const equityData = {json.dumps(sample_equity_curve)};
-        // Example: To verify data is available in console:
-        // console.log(equityData); 
-        // A real implementation would use a charting library here to draw on the 'equityTrendChart' div.
+        const ctx = document.getElementById('equityTrendChartCanvas').getContext('2d');
+        const labels = Array.from({{ length: equityData.length }}, (_, i) => `Tick ${{i + 1}}`);
+
+        new Chart(ctx, {{
+            type: 'line',
+            data: {{
+                labels: labels,
+                datasets: [{{
+                    label: 'Sample Equity Curve',
+                    data: equityData,
+                    borderColor: 'rgb(75, 192, 192)',
+                    tension: 0.1
+                }}]
+            }},
+            options: {{
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {{
+                    y: {{
+                        beginAtZero: false,
+                        title: {{
+                            display: true,
+                            text: 'Equity'
+                        }}
+                    }},
+                    x: {{
+                        title: {{
+                            display: true,
+                            text: 'Time (Ticks)'
+                        }}
+                    }}
+                }},
+                plugins: {{
+                    title: {{
+                        display: true,
+                        text: 'Sample Equity Curve Over Time'
+                    }}
+                }}
+            }}
+        }});
     </script>
 </body>
 </html>

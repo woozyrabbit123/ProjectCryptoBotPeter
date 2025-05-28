@@ -25,7 +25,7 @@ The script performs the following actions:
         *   Compares the average fitness of DNAs containing these motifs against the overall average fitness.
         *   Includes a "Motif-Regime Correlation Hints" section, which provides insights into the typical market conditions (CES vectors from the `ces_vector_at_evaluation_time` column in the log) associated with the top DNA motifs by showing the most frequent CES vector for each top motif.
 3.  Generates a consolidated report of these statistics.
-4.  **HTML Dashboard Generation**: Generates a simple HTML dashboard (`reports/latest_performance_dashboard.html`) which includes summary statistics and embeds data for a potential equity curve visualization.
+4.  **HTML Dashboard Generation**: Generates a simple HTML dashboard (`reports/latest_performance_dashboard.html`) which includes summary statistics and an interactive line chart visualizing a sample equity curve (using Chart.js).
 
 ### Output Format
 
