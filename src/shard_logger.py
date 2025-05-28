@@ -10,8 +10,8 @@ import logging
 import numpy as np
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# logging.basicConfig(level=logging.INFO) # Basic config should be done at application entry point
+logger = logging.getLogger(__name__) # Module-level logger
 
 # New Wisdom Shard format:
 # <QfffBBfhBfffHBh
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 #   fetch_latency_ms (uint16)
 #   latency_spike_flag (uint8)
 #   latency_volatility_index (float16)
-SHARD_FORMAT = '<QfffBBfhBfffHBh'  # 37 bytes
+SHARD_FORMAT: str = '<QfffBBfhBfffHBe'  # 37 bytes, changed last 'h' to 'e' for float16
 
 def log_raw_shard(
     file_path: str,
@@ -88,33 +88,32 @@ def log_raw_shard(
         latency_volatility_index (float): Latency volatility index (float16, default 0.0).
     """
     try:
-        # Prepare all values for struct.pack and print their types/values for debugging
-        ts = int(timestamp_int)
-        pr = float(price)
-        ema = float(ema_price)
-        vol = float(calculated_volatility)
-        regime = int(volatility_regime)
-        action = int(action_taken)
-        pnl = float(pnl_realized)
-        momentum_scaled = int(max(-32767, min(32767, int(micro_momentum * 10000))))
-        vol_div_flag = int(volume_divergence_flag)
-        live_vol = float(live_volume)
-        vwma = float(vwma_price)
-        vwma_dev = float(vwma_deviation_pct)
-        latency_ms = int(fetch_latency_ms)
-        latency_spike = int(latency_spike_flag)
-        latency_vol_idx = np.float16(latency_volatility_index) if latency_volatility_index is not None else np.float16(0.0)
-        latency_vol_idx_int = int(latency_vol_idx)
-        # Debug prints for all integer fields
-        print(f"DEBUG: ts type: {type(ts)}, value: {ts}")
-        print(f"DEBUG: regime type: {type(regime)}, value: {regime}")
-        print(f"DEBUG: action type: {type(action)}, value: {action}")
-        print(f"DEBUG: momentum_scaled type: {type(momentum_scaled)}, value: {momentum_scaled}")
-        print(f"DEBUG: vol_div_flag type: {type(vol_div_flag)}, value: {vol_div_flag}")
-        print(f"DEBUG: latency_ms type: {type(latency_ms)}, value: {latency_ms}")
-        print(f"DEBUG: latency_spike type: {type(latency_spike)}, value: {latency_spike}")
-        print(f"DEBUG: latency_vol_idx_int type: {type(latency_vol_idx_int)}, value: {latency_vol_idx_int}")
-        packed = struct.pack(
+        ts: int = int(timestamp_int)
+        pr: float = float(price)
+        ema: float = float(ema_price)
+        vol: float = float(calculated_volatility)
+        regime: int = int(volatility_regime)
+        action: int = int(action_taken)
+        pnl: float = float(pnl_realized)
+        momentum_scaled: int = int(max(-32767, min(32767, int(micro_momentum * 10000))))
+        vol_div_flag: int = int(volume_divergence_flag)
+        live_vol: float = float(live_volume)
+        vwma: float = float(vwma_price)
+        vwma_dev: float = float(vwma_deviation_pct)
+        latency_ms: int = int(fetch_latency_ms)
+        latency_spike: int = int(latency_spike_flag)
+        latency_vol_idx: np.float16 = np.float16(latency_volatility_index) if latency_volatility_index is not None else np.float16(0.0)
+        
+        logger.debug(f"ts type: {type(ts)}, value: {ts}")
+        logger.debug(f"regime type: {type(regime)}, value: {regime}")
+        logger.debug(f"action type: {type(action)}, value: {action}")
+        logger.debug(f"momentum_scaled type: {type(momentum_scaled)}, value: {momentum_scaled}")
+        logger.debug(f"vol_div_flag type: {type(vol_div_flag)}, value: {vol_div_flag}")
+        logger.debug(f"latency_ms type: {type(latency_ms)}, value: {latency_ms}")
+        logger.debug(f"latency_spike type: {type(latency_spike)}, value: {latency_spike}")
+        # Removed debug print for latency_vol_idx_int as it's no longer used
+        
+        packed: bytes = struct.pack(
             SHARD_FORMAT,
             ts,
             pr,
@@ -130,7 +129,7 @@ def log_raw_shard(
             vwma_dev,
             latency_ms,
             latency_spike,
-            latency_vol_idx_int
+            latency_vol_idx # Use the np.float16 value directly
         )
         with open(file_path, 'ab') as f:
             f.write(packed)

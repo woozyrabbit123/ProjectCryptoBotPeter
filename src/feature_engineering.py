@@ -3,12 +3,12 @@ Feature engineering module for Project Crypto Bot Peter.
 Handles calculation of technical indicators and feature preparation for the model.
 """
 
-import polars as pl
 import numpy as np
-from typing import Optional
+from typing import Optional, Dict, List, Tuple, Any, Union # Ensured all are present
 import logging
 from dataclasses import dataclass
-import collections
+import collections # For collections.deque
+from collections import deque # Explicit import for deque if used directly
 import time
 from utils.perf import timed
 
@@ -19,11 +19,16 @@ logger = logging.getLogger(__name__)
 # TODO: Implement feature calculation functions 
 
 class EMA:
-    def __init__(self, span: int, smoothing: float = 2.0):
+    span: int
+    alpha: float
+    current_ema: Optional[float]
+    num_observations: int
+
+    def __init__(self, span: int, smoothing: float = 2.0) -> None: # Added None return type
         self.span = span
         self.alpha = smoothing / (1.0 + span)
         self.current_ema: Optional[float] = None
-        self.num_observations = 0
+        self.num_observations: int = 0 # Explicitly typed initialization
 
     def update(self, price: float) -> Optional[float]:
         if self.current_ema is None:
@@ -38,28 +43,48 @@ class EMA:
         return self.current_ema
 
 class VolatilityRegime:
-    def __init__(self, window: int = 34, price_buffer_ref=None):
-        self.window = window
+    window: int
+    price_buffer_ref: Optional[Union[collections.deque, np.ndarray, Any]] # Using collections.deque as per prompt
+    thresholds: Dict[str, float]
+    last_raw_volatility: Optional[float]
+
+    def __init__(self, window: int = 34, price_buffer_ref: Optional[Union[collections.deque, np.ndarray, Any]] = None) -> None:
+        self.window: int = window
         self.price_buffer_ref = price_buffer_ref
-        self.thresholds = {'low_raw': 0.0001, 'medium_raw': 0.0005}
-        self.last_raw_volatility = None
+        self.thresholds: Dict[str, float] = {'low_raw': 0.0001, 'medium_raw': 0.0005}
+        self.last_raw_volatility: Optional[float] = None
 
     def classify_current(self) -> str:
-        buf = self.price_buffer_ref
-        if buf is None or len(buf) < max(10, self.window // 2):
+        buf: Optional[Union[collections.deque, np.ndarray, Any]] = self.price_buffer_ref
+        if buf is None or len(buf) < max(10, self.window // 2): # Assuming len() is applicable
             self.last_raw_volatility = None
             return "unknown"
+        
+        prices_data: Union[List[Any], np.ndarray] # Intermediate variable before ensuring it's np.ndarray
         if isinstance(buf, collections.deque):
-            prices = list(buf)[-self.window:]
-        else:
-            prices = buf.get_recent(self.window)[0]
-        prices = np.array(prices, dtype=np.float64)
+            prices_data = list(buf)[-self.window:]
+        elif hasattr(buf, 'get_recent'): # Assuming an interface like np.ndarray or a custom buffer
+            prices_data = buf.get_recent(self.window)[0] # Assuming get_recent returns a tuple/list
+        else: # Fallback or error if buffer type is unknown
+            self.logger.warning(f"VolatilityRegime: Unknown buffer type: {type(buf)}")
+            self.last_raw_volatility = None
+            return "unknown"
+
+        prices: np.ndarray = np.array(prices_data, dtype=np.float64)
         if len(prices) < max(10, self.window // 2):
             self.last_raw_volatility = None
             return "unknown"
-        log_returns = np.diff(np.log(prices))
-        current_vol = np.std(log_returns)
-        self.last_raw_volatility = float(current_vol)
+        
+        # Ensure prices are positive for log
+        if np.any(prices <= 0):
+            self.logger.warning("VolatilityRegime: Non-positive price(s) encountered, cannot compute log returns.")
+            self.last_raw_volatility = None
+            return "unknown"
+
+        log_returns: np.ndarray = np.diff(np.log(prices))
+        current_vol: float = float(np.std(log_returns)) # np.std returns np.float64, cast to float
+        self.last_raw_volatility = current_vol
+        
         if current_vol < self.thresholds['low_raw']:
             return "low"
         elif current_vol < self.thresholds['medium_raw']:
