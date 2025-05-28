@@ -26,6 +26,8 @@ from src.utils.performance_metrics_utils import (
     calculate_max_drawdown,
     calculate_trade_stats
 )
+# Import for the new endpoint
+from src.data_persistence import PerformanceLogDatabase
 
 app = Flask(__name__)
 logger = logging.getLogger(__name__)
@@ -151,6 +153,49 @@ def get_performance_metrics() -> Tuple[str, int]:
     except Exception as e:
         logger.error(f"Error processing data for API from log file '{actual_log_file_path}': {e}", exc_info=True)
         return jsonify({'error': f"Error processing data: {str(e)}"}), 500
+
+
+@app.route('/api/top_n_performers', methods=['GET'])
+def get_top_n_performers() -> Tuple[str, int]:
+    n_param_str: Optional[str] = request.args.get('n')
+    default_n: int = 10
+    valid_n: int = default_n
+
+    if n_param_str is not None:
+        try:
+            n_val = int(n_param_str)
+            if n_val > 0:
+                valid_n = n_val
+            else:
+                logger.warning(f"Invalid 'n' parameter: {n_param_str}. Must be positive. Using default {default_n}.")
+                # Optionally, return 400 error:
+                # return jsonify({'error': "Parameter 'n' must be a positive integer."}), 400
+        except ValueError:
+            logger.warning(f"Invalid 'n' parameter: {n_param_str}. Not an integer. Using default {default_n}.")
+            # Optionally, return 400 error:
+            # return jsonify({'error': "Parameter 'n' must be a valid integer."}), 400
+    
+    logger.info(f"Received request for /api/top_n_performers with n={valid_n}")
+
+    try:
+        db_instance = PerformanceLogDatabase() # Uses configured DB path
+        top_performers: List[Dict[str, Any]] = db_instance.fetch_top_n_performers(n=valid_n)
+        
+        if not top_performers:
+            logger.info(f"No top performers found or database is empty for n={valid_n}.")
+            return jsonify([]), 200 # Return empty list with 200 OK
+        
+        logger.info(f"Successfully fetched {len(top_performers)} top performers.")
+        # The fetch_top_n_performers already returns a list of dicts.
+        # Ensure no np.nan values if they are not JSON serializable (though sqlite3.Row to dict usually handles this)
+        # For safety, explicitly convert any remaining np.nan to None if necessary,
+        # but PerformanceLogDatabase should ideally handle this if it's an issue.
+        # Assuming fetch_top_n_performers returns JSON-compatible data.
+        return jsonify(top_performers), 200
+
+    except Exception as e:
+        logger.error(f"Error fetching top N performers from database: {e}", exc_info=True)
+        return jsonify({'error': "Failed to retrieve top performers from database."}), 500
 
 
 # --- Main Block ---
