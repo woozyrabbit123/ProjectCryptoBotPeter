@@ -20,20 +20,15 @@ The script performs the following actions:
         *   Winning Trade Percentage.
         *   Average Trade Profit/Loss (per unit, based on BUY/SELL pairs).
     *   **Motif Usage Analysis:**
-        *   Identifies the top 3 most frequently occurring indicator-based motifs. The regex pattern used for discovering these motifs (e.g., to find patterns like 'Indicator_EMA_20_Used') can be customized in `config.ini` under the `[MotifAnalysis]` section using the `motif_regex_pattern` key. It defaults to a predefined pattern (`Indicator_([A-Z0-9]+)_(\d+)(?:_Used)?`) if this configuration is not specified.
+        *   Identifies the top 3 most frequently occurring indicator-based motifs (e.g., `Indicator_RSI_14`).
         *   Reports their frequency.
         *   Compares the average fitness of DNAs containing these motifs against the overall average fitness.
         *   Includes a "Motif-Regime Correlation Hints" section, which provides insights into the typical market conditions (CES vectors from the `ces_vector_at_evaluation_time` column in the log) associated with the top DNA motifs by showing the most frequent CES vector for each top motif.
 3.  Generates a consolidated report of these statistics.
-4.  **HTML Dashboard Generation**: Generates a simple HTML dashboard (`reports/latest_performance_dashboard.html`) which includes summary statistics and embeds data for a potential equity curve visualization.
 
 ### Output Format
 
-The script outputs its primary findings directly to the console in **Markdown format**. This allows for easy readability and can be copied into Markdown-compatible documents or wikis. Additionally, it saves an HTML dashboard as mentioned above.
-
-### Data Sources
-
-Currently, this script primarily reads data from CSV log files. Note that the main LEE application (`src/lee.py`) now logs performance data to both CSV files and an SQLite database (`data/performance_logs.db` by default, configurable in `config.ini`). While this script does not yet directly query the SQLite database, future enhancements could leverage it for more complex queries or broader historical analysis.
+The script now outputs its findings directly to the console in **Markdown format**. This allows for easy readability and can be copied into Markdown-compatible documents or wikis.
 
 ### How to Run
 
@@ -45,7 +40,7 @@ To execute the script, navigate to the root directory of the project and use the
 python scripts/generate_simple_performance_report.py
 ```
 
-This command will attempt to read the default performance log file, which is `performance_log_FULL_V1_2.csv`, expected to be located in the project root directory (`/app/performance_log_FULL_V1_2.csv` in the sandbox environment). It will also generate the HTML report in the `reports/` directory.
+This command will attempt to read the default performance log file, which is `performance_log_FULL_V1_2.csv`, expected to be located in the project root directory (`/app/performance_log_FULL_V1_2.csv` in the sandbox environment).
 
 **Specifying a Log File Path:**
 
@@ -68,5 +63,3 @@ python scripts/generate_simple_performance_report.py --log_file_path ~/lee_resul
 ### Configurability
 
 The script's internal logging behavior (e.g., verbosity of its own processing messages, not the content of the generated report) can be configured via a `config.ini` file placed in the project's root directory. Specifically, the `level` setting under the `[Logging]` section in `config.ini` will be used if the `src.utils.logging_utils` module is available to the script. If not found, basic logging is used.
-
-Additionally, as mentioned in the "Motif Usage Analysis" section, the regex pattern for motif identification is configurable via `config.ini`. The database path for the main application is also configured in `config.ini` (`[DatabaseSettings] -> db_path`).
