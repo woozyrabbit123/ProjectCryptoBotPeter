@@ -7,6 +7,7 @@ import numpy as np
 import re # Added for regex
 from collections import Counter # Added for frequency counting
 from typing import Optional, List, Dict, Any, Tuple
+import configparser # Added for config.ini handling
 
 # Attempt to import setup_global_logging, handle if not found for standalone execution
 try:
@@ -21,89 +22,14 @@ except ImportError:
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
+# Import refactored utility functions
+from src.utils.performance_metrics_utils import (
+    calculate_sharpe_ratio,
+    calculate_max_drawdown,
+    calculate_trade_stats
+)
+
 logger: logging.Logger = logging.getLogger(__name__)
-
-# --- Metric Calculation Functions ---
-
-def calculate_sharpe_ratio(equity_curve: List[float], trading_days_per_year: int = 252) -> float:
-    """Calculates Sharpe ratio from an equity curve."""
-    if not equity_curve or len(equity_curve) < 2:
-        return np.nan
-    
-    equity_array = np.array(equity_curve, dtype=float)
-    returns = np.diff(equity_array) / equity_array[:-1]
-    returns = returns[np.isfinite(returns)] 
-
-    if len(returns) < 2: 
-        return np.nan
-
-    mean_return = np.mean(returns)
-    std_dev_returns = np.std(returns)
-
-    if std_dev_returns == 0:
-        return np.nan 
-
-    sharpe = (mean_return / std_dev_returns) * np.sqrt(trading_days_per_year)
-    return float(sharpe)
-
-
-def calculate_max_drawdown(equity_curve: List[float]) -> float:
-    """Calculates the maximum drawdown from an equity curve."""
-    if not equity_curve:
-        return np.nan
-    
-    equity_array = np.array(equity_curve, dtype=float)
-    peak = -np.inf
-    max_dd = 0.0
-
-    for equity_value in equity_array:
-        if equity_value > peak:
-            peak = equity_value
-        if peak > 0: 
-            drawdown = (peak - equity_value) / peak
-            if drawdown > max_dd:
-                max_dd = drawdown
-    return float(max_dd * 100) # Return as percentage
-
-
-def calculate_trade_stats(trade_log: List[Dict[str, Any]]) -> Dict[str, float]:
-    """
-    Calculates winning trade percentage and average P/L per unit.
-    Assumes trades are pairs of 'BUY' and subsequent 'SELL'.
-    """
-    if not trade_log:
-        return {'winning_trade_percentage': np.nan, 'average_trade_pl': np.nan, 'total_trades': 0}
-
-    trades_completed: List[Dict[str, float]] = []
-    active_buy: Optional[Dict[str, Any]] = None
-
-    for trade_action in trade_log:
-        action_type = trade_action.get('type')
-        price = trade_action.get('price')
-
-        if price is None: 
-            logger.debug(f"Skipping trade action due to missing price: {trade_action}")
-            continue
-
-        if action_type == 'BUY':
-            active_buy = trade_action
-        elif action_type == 'SELL' and active_buy:
-            buy_price = active_buy.get('price')
-            if buy_price is not None: 
-                profit_loss = price - buy_price 
-                trades_completed.append({'pnl': profit_loss, 'buy_price': buy_price, 'sell_price': price})
-            active_buy = None 
-
-    if not trades_completed:
-        return {'winning_trade_percentage': np.nan, 'average_trade_pl': np.nan, 'total_trades': 0}
-
-    winning_trades = sum(1 for trade in trades_completed if trade['pnl'] > 0)
-    total_trades = len(trades_completed)
-    
-    winning_percentage = (winning_trades / total_trades) * 100 if total_trades > 0 else np.nan
-    average_pl = sum(trade['pnl'] for trade in trades_completed) / total_trades if total_trades > 0 else np.nan
-    
-    return {'winning_trade_percentage': float(winning_percentage), 'average_trade_pl': float(average_pl), 'total_trades': total_trades}
 
 # --- Motif Analysis Function ---
 def analyze_motif_usage(df: pd.DataFrame) -> str:
@@ -113,6 +39,36 @@ def analyze_motif_usage(df: pd.DataFrame) -> str:
     Returns a Markdown formatted string of the analysis.
     """
     motif_lines: List[str] = ["\n## Motif Usage Analysis"]
+
+    # --- Motif Regex Configuration ---
+    default_motif_regex: str = r"Indicator_([A-Z0-9]+)_(\d+)(?:_Used)?"
+    motif_regex_to_use: str = default_motif_regex
+
+    config = configparser.ConfigParser()
+    # Path to config.ini assumes script is in 'scripts/' and config.ini is in project root.
+    config_path = os.path.join(os.path.dirname(__file__), '..', 'config.ini')
+
+    if os.path.exists(config_path):
+        config.read(config_path)
+        try:
+            configured_regex = config.get('MotifAnalysis', 'motif_regex_pattern', fallback=default_motif_regex)
+            if configured_regex and configured_regex.strip(): # Ensure not empty or just whitespace
+                motif_regex_to_use = configured_regex
+                if motif_regex_to_use == default_motif_regex:
+                    logger.info(f"Motif Analysis: Using default regex pattern (also found in config.ini or fallback used): {motif_regex_to_use}")
+                else:
+                    logger.info(f"Motif Analysis: Using regex pattern from config.ini: {motif_regex_to_use}")
+            else: # Empty value in config
+                logger.warning(f"Motif Analysis: 'motif_regex_pattern' in config.ini [MotifAnalysis] is empty. Using default: {default_motif_regex}")
+                motif_regex_to_use = default_motif_regex
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            logger.warning(f"Motif Analysis: '[MotifAnalysis]' section or 'motif_regex_pattern' key not found in {config_path}. Using default regex: {default_motif_regex}")
+            motif_regex_to_use = default_motif_regex
+    else:
+        logger.warning(f"Motif Analysis: config.ini not found at {config_path}. Using default regex: {default_motif_regex}")
+    
+    logger.debug(f"Final regex pattern for motif analysis: {motif_regex_to_use}")
+    # --- End of Motif Regex Configuration ---
 
     if 'logic_dna_structure_representation' not in df.columns:
         motif_lines.append("\n*Note: `logic_dna_structure_representation` column not found. Skipping motif analysis.*")
@@ -131,7 +87,7 @@ def analyze_motif_usage(df: pd.DataFrame) -> str:
              motif_lines.append("\n*Note: No valid numeric fitness scores available for overall average fitness.*")
 
 
-    motif_pattern = re.compile(r"Indicator_([A-Z0-9]+)_(\d+)(?:_Used)?")
+    compiled_motif_pattern = re.compile(motif_regex_to_use)
     motif_counts: Counter = Counter()
 
     for structure in df['logic_dna_structure_representation'].dropna():
