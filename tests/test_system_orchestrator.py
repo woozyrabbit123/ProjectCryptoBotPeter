@@ -242,6 +242,65 @@ class TestRNGStateManagement:
         assert f"Error unpickling RNG state from {filepath}: pickle data was truncated" in caplog.text
         # Assert that the program continues execution (no exception raised)
 
+    @patch('src.system_orchestrator.MetaParameterMonitor')
+    def test_load_rng_state_truly_corrupted_unpickleable_file(self, MockMetaParameterMonitor, tmp_path, caplog):
+        """
+        Tests that load_rng_state handles a file with non-pickle binary content gracefully
+        and does not change existing RNG states.
+        """
+        MockMetaParameterMonitor.return_value = MagicMock()
+        orchestrator = SystemOrchestrator(None, None, None)
+        
+        # Get initial RNG states
+        random.seed(123) # Set a known state
+        np.random.seed(123) # Set a known state
+        initial_python_state = random.getstate()
+        initial_numpy_state_tuple = np.random.get_state() # np.random.get_state() returns a tuple
+
+        corrupted_rng_file = tmp_path / "corrupted_text.rng"
+        corrupted_rng_file.write_text("This is definitely not a pickle file.")
+
+        caplog.set_level(logging.ERROR, logger="src.system_orchestrator")
+        orchestrator.load_rng_state(str(corrupted_rng_file))
+
+        # Verify error message
+        assert "Error unpickling RNG state from" in caplog.text
+        assert str(corrupted_rng_file) in caplog.text
+        
+        # Verify RNG states remain unchanged
+        assert random.getstate() == initial_python_state, "Python's RNG state was unexpectedly changed."
+        
+        # Compare NumPy state elements individually if direct tuple comparison is flaky
+        current_numpy_state_tuple = np.random.get_state()
+        assert current_numpy_state_tuple[0] == initial_numpy_state_tuple[0], "NumPy RNG state (type) was unexpectedly changed."
+        assert np.array_equal(current_numpy_state_tuple[1], initial_numpy_state_tuple[1]), "NumPy RNG state (keys) was unexpectedly changed."
+        assert current_numpy_state_tuple[2] == initial_numpy_state_tuple[2], "NumPy RNG state (pos) was unexpectedly changed."
+        assert current_numpy_state_tuple[3] == initial_numpy_state_tuple[3], "NumPy RNG state (has_gauss) was unexpectedly changed."
+        # The cached_gaussian element can sometimes be an array, handle that.
+        if isinstance(current_numpy_state_tuple[4], np.ndarray) and isinstance(initial_numpy_state_tuple[4], np.ndarray):
+            assert np.array_equal(current_numpy_state_tuple[4], initial_numpy_state_tuple[4]), "NumPy RNG state (cached_gaussian) was unexpectedly changed."
+        else:
+            assert current_numpy_state_tuple[4] == initial_numpy_state_tuple[4], "NumPy RNG state (cached_gaussian) was unexpectedly changed."
+
+
+    @patch('src.system_orchestrator.MetaParameterMonitor')
+    def test_save_rng_state_raises_error_if_dir_not_exists(self, MockMetaParameterMonitor, tmp_path):
+        """
+        Tests that save_rng_state raises FileNotFoundError if the parent directory for the save path does not exist.
+        This confirms current behavior that os.makedirs is not implicitly called.
+        """
+        MockMetaParameterMonitor.return_value = MagicMock()
+        orchestrator = SystemOrchestrator(None, None, None)
+        
+        save_path = tmp_path / "non_existent_dir" / "state.rng"
+        
+        # Standard open() in 'wb' mode does not create parent directories.
+        # We expect FileNotFoundError (or possibly IOError, depending on Python version/OS nuances,
+        # but FileNotFoundError is more specific and common for this case).
+        with pytest.raises(FileNotFoundError):
+            orchestrator.save_rng_state(str(save_path))
+
+
 # Helper for valid lee_params (already defined, ensure it's available or re-add if needed)
 # def get_valid_lee_params() -> dict: ...
 
