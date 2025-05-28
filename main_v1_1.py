@@ -1,5 +1,6 @@
 from src.data_handling import load_ohlcv_csv, calculate_indicators
 from src.system_orchestrator import SystemOrchestrator
+from src.live_data_fetcher import HistoricalDataFetcher # Added import
 import os
 import argparse
 from src.utils.logging_utils import setup_global_logging # Added
@@ -16,7 +17,10 @@ def run_v1_1_core_demo():
     print(f"\n[INFO] Running in mode: {mode}")
     print("DEBUG: About to load historical OHLCV data")
     # Load historical OHLCV data and calculate indicators
-    ohlcv = load_ohlcv_csv('data/mock_ohlcv_data.csv')
+    # ohlcv = load_ohlcv_csv('data/mock_ohlcv_data.csv') # Commented out
+    fetcher = HistoricalDataFetcher() # Instantiated fetcher
+    ohlcv = fetcher.fetch_ohlcv_data(symbol="mock_BTCUSD", start_date="2023-01-01", end_date="2023-01-02") # Fetch data
+    # TODO: Replace with actual API integration for live/historical data. Currently uses mocked data.
     indicators = calculate_indicators(ohlcv)
     # Define backtest config
     backtest_config = {

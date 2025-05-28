@@ -539,6 +539,7 @@ class LEE:
             'metric_final_equity': float(final_equity),
             'metric_initial_capital': float(initial_capital),
             'trade_log': trade_log,
+            'equity_curve': equity_curve, # Added equity curve to metrics
         }
         return metrics
 
@@ -636,6 +637,9 @@ class LEE:
         sorted_pop: List[LogicDNA_v1] = sorted(self.population, key=lambda d: getattr(d, 'fitness', 0.0), reverse=True)
         n_elite: int = max(1, int(self.elitism_percentage * self.population_size))
         elites: List[LogicDNA_v1] = [dna.copy() for dna in sorted_pop[:n_elite]]
+        self.logger.debug(f"Selected {len(elites)} elite individuals:")
+        for elite_dna in elites:
+            self.logger.debug(f"  Elite DNA ID: {getattr(elite_dna, 'dna_id', 'N/A')}, Fitness: {getattr(elite_dna, 'fitness', 0.0):.4f}")
         
         # Tournament selection for parents
         parents_for_reproduction: List[LogicDNA_v1] = []
@@ -644,6 +648,16 @@ class LEE:
             tournament_candidates: List[LogicDNA_v1] = random.sample(sorted_pop, min(tournament_size, len(sorted_pop)))
             winner: LogicDNA_v1 = max(tournament_candidates, key=lambda d: getattr(d, 'fitness', 0.0))
             parents_for_reproduction.append(winner.copy())
+        
+        self.logger.debug(f"Selected {len(parents_for_reproduction)} parents for reproduction:")
+        # Log only a sample if it's too large to avoid spamming logs
+        sample_size_to_log_parents: int = 5 
+        for i, parent_dna in enumerate(parents_for_reproduction):
+            if i < sample_size_to_log_parents or i >= len(parents_for_reproduction) - sample_size_to_log_parents: # Log first and last few
+                self.logger.debug(f"  Parent for Rep. DNA ID: {getattr(parent_dna, 'dna_id', 'N/A')}, Fitness: {getattr(parent_dna, 'fitness', 0.0):.4f}")
+            elif i == sample_size_to_log_parents:
+                self.logger.debug(f"  ... (omitting {len(parents_for_reproduction) - 2*sample_size_to_log_parents} other parents) ...")
+                
         return elites, parents_for_reproduction
 
     def run_evolutionary_cycle(self, active_persona: 'MarketPersona', market_data_for_evaluation: Dict[str, Any], mle_bias: Optional[Dict[str, Any]] = None, ces_info: Optional[Dict[str, Any]] = None) -> None:
@@ -723,38 +737,69 @@ class LEE:
         current_gen: int = getattr(self, 'generation_counter', 0)
         motif_adopted_count: int = 0
         
-        for _ in range(num_offspring_needed):
+        for i in range(num_offspring_needed):
             child_candidate: LogicDNA_v1
             parent1: LogicDNA_v1
             parent2: LogicDNA_v1
+            mutation_type_applied: str = "unknown"
             
             if random.random() < self.crossover_rate and len(parents_for_reproduction) > 1:
                 parent1, parent2 = random.sample(parents_for_reproduction, 2)
+                self.logger.debug(f"Offspring {i+1}: Performing crossover with Parent1 ID: {getattr(parent1, 'dna_id', 'N/A')} and Parent2 ID: {getattr(parent2, 'dna_id', 'N/A')}")
                 child1, child2 = self._crossover_trees(parent1, parent2)
                 child_candidate = child1 if random.random() < 0.5 else child2
+                mutation_type_applied = "crossover"
             else:
-                child_candidate = random.choice(parents_for_reproduction).copy()
+                selected_parent: LogicDNA_v1 = random.choice(parents_for_reproduction)
+                self.logger.debug(f"Offspring {i+1}: Selecting Parent ID: {getattr(selected_parent, 'dna_id', 'N/A')} for mutation (no crossover).")
+                child_candidate = selected_parent.copy()
+                mutation_type_applied = "direct_copy_plus_mutation" # Will be refined by subsequent mutation steps
             
             is_motif_adopted_this_iteration: bool = False
+            applied_structural_mutation: bool = False
             if random.random() < self.mutation_rate_structural:
-                original_structure: str = child_candidate.to_string_representation() if hasattr(child_candidate, 'to_string_representation') else ''
+                original_structure_for_debug: str = child_candidate.to_string_representation() if hasattr(child_candidate, 'to_string_representation') else 'N/A'
+                self.logger.debug(f"Offspring {i+1} (DNA ID: {getattr(child_candidate, 'dna_id', 'N/A')}): Applying structural mutation. Original structure: {original_structure_for_debug}")
                 child_candidate = self._structural_mutation(child_candidate, mle_bias=mle_bias)
-                new_structure: str = child_candidate.to_string_representation() if hasattr(child_candidate, 'to_string_representation') else ''
-                if mle_bias and 'seed_motifs' in mle_bias and original_structure != new_structure:
+                new_structure_for_debug: str = child_candidate.to_string_representation() if hasattr(child_candidate, 'to_string_representation') else 'N/A'
+                self.logger.debug(f"Offspring {i+1} (DNA ID: {getattr(child_candidate, 'dna_id', 'N/A')}): Structural mutation applied. New structure: {new_structure_for_debug}")
+                applied_structural_mutation = True
+                mutation_type_applied = f"{mutation_type_applied}_then_structural" if mutation_type_applied != "direct_copy_plus_mutation" else "structural"
+                
+                if mle_bias and 'seed_motifs' in mle_bias and original_structure_for_debug != new_structure_for_debug : # Simplified check
                     is_motif_adopted_this_iteration = True # Heuristic
-                    
-            child_candidate = self._parametric_mutation(child_candidate) # Parametric mutation always applied
             
+            # Parametric mutation is always applied
+            original_params_for_debug: str = str(child_candidate.root_node) if child_candidate.root_node else 'N/A' # Basic representation
+            self.logger.debug(f"Offspring {i+1} (DNA ID: {getattr(child_candidate, 'dna_id', 'N/A')}): Applying parametric mutation. Original params (root): {original_params_for_debug}")
+            child_candidate = self._parametric_mutation(child_candidate) # Parametric mutation always applied
+            new_params_for_debug: str = str(child_candidate.root_node) if child_candidate.root_node else 'N/A'
+            self.logger.debug(f"Offspring {i+1} (DNA ID: {getattr(child_candidate, 'dna_id', 'N/A')}): Parametric mutation applied. New params (root): {new_params_for_debug}")
+            if not applied_structural_mutation and mutation_type_applied == "direct_copy_plus_mutation":
+                mutation_type_applied = "parametric_only"
+            elif mutation_type_applied.endswith("_then_structural"):
+                 mutation_type_applied = f"{mutation_type_applied}_and_parametric"
+            elif mutation_type_applied == "structural": # if only structural was applied
+                 mutation_type_applied = "structural_and_parametric"
+            elif mutation_type_applied == "crossover": # if only crossover was applied (no structural)
+                 mutation_type_applied = "crossover_then_parametric"
+
+
             if child_candidate.is_valid(self.max_depth, self.max_nodes):
                 child_candidate.generation_born = current_gen
                 offspring.append(child_candidate)
+                self.logger.debug(f"Offspring {i+1} (New DNA ID: {getattr(child_candidate, 'dna_id', 'N/A')}) created. Mutation type: {mutation_type_applied}. Valid and added to offspring.")
             else:
                 # Fallback to a new random tree if mutated/crossed-over child is invalid
+                self.logger.debug(f"Offspring {i+1} (Original DNA ID: {getattr(child_candidate, 'dna_id', 'N/A')}) was invalid after operations. Mutation type recorded: {mutation_type_applied}.")
                 new_random_tree: LogicDNA_v1 = self._create_random_valid_tree(generation_born=current_gen, mle_bias=mle_bias)
                 offspring.append(new_random_tree)
+                mutation_type_applied = "random_injection_fallback"
+                self.logger.debug(f"Offspring {i+1} (New DNA ID from fallback: {getattr(new_random_tree, 'dna_id', 'N/A')}) created. Type: {mutation_type_applied}. Valid and added to offspring.")
                 
-            if is_motif_adopted_this_iteration:
+            if is_motif_adopted_this_iteration: # This is related to structural mutation with MLE bias
                 motif_adopted_count +=1
+                self.logger.debug(f"Offspring {i+1} (DNA ID: {getattr(child_candidate, 'dna_id', 'N/A')}) potentially adopted an MLE motif during structural mutation.")
                 
         self.logger.info(f"[LEE] Motif adoption rate this generation: {motif_adopted_count}/{num_offspring_needed if num_offspring_needed > 0 else 'N/A'}")
         log_event('MOTIF_ADOPTION', {'generation': current_gen, 'motif_adopted': motif_adopted_count, 'num_offspring': num_offspring_needed}) # type: ignore
