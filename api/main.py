@@ -20,66 +20,19 @@ except ImportError:
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
+# Import refactored utility functions
+from src.utils.performance_metrics_utils import (
+    calculate_sharpe_ratio,
+    calculate_max_drawdown,
+    calculate_trade_stats
+)
+# Import for the new endpoint
+from src.data_persistence import PerformanceLogDatabase
+
 app = Flask(__name__)
 logger = logging.getLogger(__name__)
 
-# --- Helper Functions (Adapted from scripts.generate_simple_performance_report) ---
-
-def calculate_sharpe_ratio(equity_curve: List[float], trading_days_per_year: int = 252) -> float:
-    if not equity_curve or len(equity_curve) < 2:
-        return np.nan
-    equity_array = np.array(equity_curve, dtype=float)
-    returns = np.diff(equity_array) / equity_array[:-1]
-    returns = returns[np.isfinite(returns)]
-    if len(returns) < 2:
-        return np.nan
-    mean_return = np.mean(returns)
-    std_dev_returns = np.std(returns)
-    if std_dev_returns == 0:
-        return np.nan
-    sharpe = (mean_return / std_dev_returns) * np.sqrt(trading_days_per_year)
-    return float(sharpe)
-
-def calculate_max_drawdown(equity_curve: List[float]) -> float:
-    if not equity_curve:
-        return np.nan
-    equity_array = np.array(equity_curve, dtype=float)
-    peak = -np.inf
-    max_dd = 0.0
-    for equity_value in equity_array:
-        if equity_value > peak:
-            peak = equity_value
-        if peak > 0:
-            drawdown = (peak - equity_value) / peak
-            if drawdown > max_dd:
-                max_dd = drawdown
-    return float(max_dd * 100)
-
-def calculate_trade_stats(trade_log: List[Dict[str, Any]]) -> Dict[str, float]:
-    if not trade_log:
-        return {'winning_trade_percentage': np.nan, 'average_trade_pl': np.nan, 'total_trades': 0}
-    trades_completed: List[Dict[str, float]] = []
-    active_buy: Optional[Dict[str, Any]] = None
-    for trade_action in trade_log:
-        action_type = trade_action.get('type')
-        price = trade_action.get('price')
-        if price is None:
-            continue
-        if action_type == 'BUY':
-            active_buy = trade_action
-        elif action_type == 'SELL' and active_buy:
-            buy_price = active_buy.get('price')
-            if buy_price is not None:
-                profit_loss = price - buy_price
-                trades_completed.append({'pnl': profit_loss, 'buy_price': buy_price, 'sell_price': price})
-            active_buy = None
-    if not trades_completed:
-        return {'winning_trade_percentage': np.nan, 'average_trade_pl': np.nan, 'total_trades': 0}
-    winning_trades = sum(1 for trade in trades_completed if trade['pnl'] > 0)
-    total_trades = len(trades_completed)
-    winning_percentage = (winning_trades / total_trades) * 100 if total_trades > 0 else np.nan
-    average_pl = sum(trade['pnl'] for trade in trades_completed) / total_trades if total_trades > 0 else np.nan
-    return {'winning_trade_percentage': float(winning_percentage), 'average_trade_pl': float(average_pl), 'total_trades': total_trades}
+# --- Helper Functions (Logic specific to API processing) ---
 
 def process_log_data_for_api(df: pd.DataFrame) -> Dict[str, Any]:
     """
@@ -200,6 +153,49 @@ def get_performance_metrics() -> Tuple[str, int]:
     except Exception as e:
         logger.error(f"Error processing data for API from log file '{actual_log_file_path}': {e}", exc_info=True)
         return jsonify({'error': f"Error processing data: {str(e)}"}), 500
+
+
+@app.route('/api/top_n_performers', methods=['GET'])
+def get_top_n_performers() -> Tuple[str, int]:
+    n_param_str: Optional[str] = request.args.get('n')
+    default_n: int = 10
+    valid_n: int = default_n
+
+    if n_param_str is not None:
+        try:
+            n_val = int(n_param_str)
+            if n_val > 0:
+                valid_n = n_val
+            else:
+                logger.warning(f"Invalid 'n' parameter: {n_param_str}. Must be positive. Using default {default_n}.")
+                # Optionally, return 400 error:
+                # return jsonify({'error': "Parameter 'n' must be a positive integer."}), 400
+        except ValueError:
+            logger.warning(f"Invalid 'n' parameter: {n_param_str}. Not an integer. Using default {default_n}.")
+            # Optionally, return 400 error:
+            # return jsonify({'error': "Parameter 'n' must be a valid integer."}), 400
+    
+    logger.info(f"Received request for /api/top_n_performers with n={valid_n}")
+
+    try:
+        db_instance = PerformanceLogDatabase() # Uses configured DB path
+        top_performers: List[Dict[str, Any]] = db_instance.fetch_top_n_performers(n=valid_n)
+        
+        if not top_performers:
+            logger.info(f"No top performers found or database is empty for n={valid_n}.")
+            return jsonify([]), 200 # Return empty list with 200 OK
+        
+        logger.info(f"Successfully fetched {len(top_performers)} top performers.")
+        # The fetch_top_n_performers already returns a list of dicts.
+        # Ensure no np.nan values if they are not JSON serializable (though sqlite3.Row to dict usually handles this)
+        # For safety, explicitly convert any remaining np.nan to None if necessary,
+        # but PerformanceLogDatabase should ideally handle this if it's an issue.
+        # Assuming fetch_top_n_performers returns JSON-compatible data.
+        return jsonify(top_performers), 200
+
+    except Exception as e:
+        logger.error(f"Error fetching top N performers from database: {e}", exc_info=True)
+        return jsonify({'error': "Failed to retrieve top performers from database."}), 500
 
 
 # --- Main Block ---
